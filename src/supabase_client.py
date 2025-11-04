@@ -1,5 +1,5 @@
 """
-Cliente para Supabase - Base de datos y funciones para EstudIA
+Cliente para Supabase - Base de datos y funciones para FiscAI
 """
 import asyncio
 from typing import List, Dict, Any, Optional
@@ -19,128 +19,151 @@ class SupabaseClient:
             config.SUPABASE_SERVICE_ROLE_KEY
         )
     
-    async def search_classroom_chunks(
+    async def search_similar_documents(
         self, 
-        embedding: List[float],
-        classroom_id: str,
+        embedding: List[float], 
         limit: int = 5,
         threshold: float = None
     ) -> List[Dict[str, Any]]:
         """
-        Buscar chunks de documentos similares en un aula usando embeddings
-        Usa la función RPC match_classroom_chunks
+        Buscar documentos similares usando embeddings
+        Compatible con match_fiscai_documents RPC
         
         Args:
-            embedding: Vector de embedding para la búsqueda (768 dimensiones)
-            classroom_id: UUID del aula para filtrar
-            limit: Número máximo de chunks a retornar
-            threshold: Umbral de similitud (default: 0.7)
+            embedding: Vector de embedding para la búsqueda
+            limit: Número máximo de documentos a retornar
+            threshold: Umbral de similitud (default: 0.6)
             
         Returns:
-            Lista de chunks similares con campos: id, classroom_document_id, chunk_index, 
-            content, token_count, similarity, document_title, document_storage_path
+            Lista de documentos similares con campos: title, scope, content, source_url, similarity
         """
         try:
             if threshold is None:
-                threshold = 0.7
+                threshold = config.SIMILARITY_THRESHOLD if hasattr(config, 'SIMILARITY_THRESHOLD') else 0.6
             
-            print(f"[SUPABASE] Buscando chunks similares en aula {classroom_id}...")
+            print(f"[SUPABASE] Buscando documentos similares...")
             print(f"[SUPABASE] - Embedding dimension: {len(embedding)}")
             print(f"[SUPABASE] - Match threshold: {threshold}")
             print(f"[SUPABASE] - Match count: {limit}")
             
+            # Preparar payload - usar query_embedding como en el script que funciona
             payload = {
-                'query_embedding': embedding,
-                'filter_classroom_id': classroom_id,
+                'query_embedding': embedding,  # float8[] - igual que simulate_recomendation.py
                 'match_threshold': threshold,
                 'match_count': limit
             }
             
-            print("[SUPABASE] Llamando match_classroom_chunks RPC...")
+            # Usar match_documents (única función RPC disponible)
+            print("[SUPABASE] Llamando match_documents RPC...")
             response = await asyncio.to_thread(
-                lambda: self.client.rpc('match_classroom_chunks', payload).execute()
+                lambda: self.client.rpc('match_documents', payload).execute()
             )
             
             if response.data:
-                print(f"[SUPABASE] ✅ Encontrados {len(response.data)} chunks")
+                print(f"[SUPABASE] ✅ Encontrados {len(response.data)} documentos (fallback)")
                 return response.data
             
-            print("[SUPABASE] ⚠️  No se encontraron chunks")
+            print("[SUPABASE] ⚠️  No se encontraron documentos")
             return []
             
         except Exception as error:
-            print(f"[SUPABASE] ❌ Error buscando chunks similares: {error}")
+            print(f"[SUPABASE] ❌ Error buscando documentos similares: {error}")
             import traceback
             traceback.print_exc()
             return []
     
-    async def get_classroom_info(self, classroom_id: str) -> Optional[Dict[str, Any]]:
+    async def search_documents_by_scope(
+        self, 
+        embedding: List[float], 
+        scope: str,
+        limit: int = 5,
+        threshold: float = None
+    ) -> List[Dict[str, Any]]:
         """
-        Obtener información del aula desde la base de datos
+        Buscar documentos similares filtrando por scope específico
         
         Args:
-            classroom_id: UUID del aula
+            embedding: Vector de embedding para la búsqueda
+            scope: Scope a filtrar (ej: "beneficios", "regimenes", "obligaciones")
+            limit: Número máximo de documentos a retornar
+            threshold: Umbral de similitud (default: 0.5)
             
         Returns:
-            Información del aula con estadísticas de documentos o None si no se encuentra
+            Lista de documentos similares filtrados por scope
         """
         try:
-            # Obtener información del aula
-            classroom_response = await asyncio.to_thread(
-                self.client.table('classrooms')
-                .select('*')
-                .eq('id', classroom_id)
-                .single()
-                .execute
+            if threshold is None:
+                threshold = 0.5
+            
+            print(f"[SUPABASE] Buscando documentos con scope '{scope}'...")
+            print(f"[SUPABASE] - Embedding dimension: {len(embedding)}")
+            print(f"[SUPABASE] - Match threshold: {threshold}")
+            print(f"[SUPABASE] - Match count: {limit}")
+            
+            # Buscar todos los documentos similares primero
+            all_docs = await self.search_similar_documents(
+                embedding=embedding,
+                limit=limit * 2,  # Buscar más para compensar el filtrado
+                threshold=threshold
             )
             
-            if not classroom_response.data:
-                return None
+            # Filtrar por scope
+            filtered_docs = [
+                doc for doc in all_docs 
+                if doc.get('scope', '').lower() == scope.lower()
+            ]
             
-            classroom = classroom_response.data
+            # Limitar resultados
+            filtered_docs = filtered_docs[:limit]
             
-            # Contar documentos del aula
-            docs_response = await asyncio.to_thread(
-                self.client.table('classroom_documents')
-                .select('id', count='exact')
-                .eq('classroom_id', classroom_id)
-                .execute
-            )
+            print(f"[SUPABASE] ✅ Encontrados {len(filtered_docs)} documentos con scope '{scope}'")
             
-            # Contar chunks totales del aula
-            chunks_response = await asyncio.to_thread(
-                self.client.table('classroom_document_chunks')
-                .select('id', count='exact')
-                .eq('classroom_id', classroom_id)
-                .execute
-            )
-            
-            classroom['document_count'] = docs_response.count or 0
-            classroom['chunk_count'] = chunks_response.count or 0
-            
-            return classroom
+            return filtered_docs
             
         except Exception as error:
-            print(f"Error obteniendo información del aula: {error}")
+            print(f"[SUPABASE] ❌ Error buscando documentos por scope: {error}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    async def get_user_context(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Obtener contexto del usuario desde la base de datos
+        
+        Args:
+            user_id: ID del usuario
+            
+        Returns:
+            Contexto del usuario o None si no se encuentra
+        """
+        try:
+            response = await asyncio.to_thread(
+                self.client.table('users').select('*').eq('id', user_id).single().execute
+            )
+            
+            if response.data:
+                return response.data
+            return None
+            
+        except Exception as error:
+            print(f"Error obteniendo contexto del usuario: {error}")
             return None
     
     async def save_chat_message(
         self,
-        classroom_id: str,
         user_id: str,
         message: str,
         response: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Guardar mensaje del chat en la tabla 'classroom_chat_history'
+        Guardar mensaje del chat en la tabla 'messages'
         
         Args:
-            classroom_id: UUID del aula
             user_id: ID del usuario
             message: Mensaje del usuario
             response: Respuesta del asistente
-            metadata: Metadatos adicionales (ej: chunks usados, similarity scores)
+            metadata: Metadatos adicionales
             
         Returns:
             Registro guardado o None si falló
@@ -149,7 +172,6 @@ class SupabaseClient:
             import datetime
             
             data = {
-                'classroom_id': classroom_id,
                 'user_id': user_id,
                 'message': message,
                 'response': response,
@@ -158,7 +180,7 @@ class SupabaseClient:
             }
             
             response = await asyncio.to_thread(
-                self.client.table('classroom_chat_history').insert(data).execute
+                self.client.table('messages').insert(data).execute
             )
             
             if response.data:
@@ -171,31 +193,28 @@ class SupabaseClient:
     
     async def get_chat_history(
         self, 
-        classroom_id: str,
-        user_id: Optional[str] = None,
+        user_id: str, 
         limit: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        Obtener historial de chat del aula desde la tabla 'classroom_chat_history'
+        Obtener historial de chat del usuario desde la tabla 'messages'
         
         Args:
-            classroom_id: UUID del aula
-            user_id: ID del usuario (opcional, para filtrar por usuario específico)
+            user_id: ID del usuario
             limit: Número máximo de mensajes
             
         Returns:
-            Lista de mensajes del historial ordenados por fecha
+            Lista de mensajes del historial
         """
         try:
-            query = self.client.table('classroom_chat_history').select('*')
-            query = query.eq('classroom_id', classroom_id)
-            
-            if user_id:
-                query = query.eq('user_id', user_id)
-            
-            query = query.order('created_at', desc=True).limit(limit)
-            
-            response = await asyncio.to_thread(query.execute)
+            response = await asyncio.to_thread(
+                self.client.table('messages')
+                .select('*')
+                .eq('user_id', user_id)
+                .order('created_at', desc=True)
+                .limit(limit)
+                .execute
+            )
             
             if response.data:
                 return response.data
@@ -203,6 +222,39 @@ class SupabaseClient:
             
         except Exception as error:
             print(f"Error obteniendo historial: {error}")
+            return []
+    
+    async def find_similar_fiscal_cases(
+        self, 
+        profile: Dict[str, Any], 
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Buscar casos fiscales similares
+        
+        Args:
+            profile: Perfil del usuario
+            limit: Número máximo de casos
+            
+        Returns:
+            Lista de casos similares
+        """
+        try:
+            response = await asyncio.to_thread(
+                self.client.rpc,
+                'find_similar_fiscal_cases',
+                {
+                    'query_profile': profile,
+                    'match_count': limit
+                }
+            )
+            
+            if response.data:
+                return response.data
+            return []
+            
+        except Exception as error:
+            print(f"Error buscando casos similares: {error}")
             return []
 
 

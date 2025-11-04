@@ -108,7 +108,7 @@ async def test_search_similar_chunks():
     query = "¿Qué es la inteligencia artificial?"
     
     # Nota: Necesitarás tener un classroom_id válido de tu base de datos
-    classroom_id = "e643da82-5a63-4de7-a29b-4e15a047ec4e"  # UUID ejemplo
+    classroom_id = "00000000-0000-0000-0000-000000000000"  # UUID ejemplo
     
     try:
         # Paso 1: Generar embedding del query
