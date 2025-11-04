@@ -53,28 +53,8 @@ class SupabaseClient:
                 'match_count': limit
             }
             
-            # Intentar con match_fiscai_documents primero
-            try:
-                print("[SUPABASE] Llamando match_fiscai_documents RPC...")
-                response = await asyncio.to_thread(
-                    lambda: self.client.rpc('match_fiscai_documents', payload).execute()
-                )
-                
-                if response.data:
-                    print(f"[SUPABASE] ✅ Encontrados {len(response.data)} documentos")
-                    # Imprimir primer resultado para debug
-                    if response.data:
-                        first = response.data[0]
-                        print(f"[SUPABASE] Ejemplo: {first.get('title', 'N/A')} (similarity: {first.get('similarity', 0)})")
-                    return response.data
-            except Exception as rpc_error:
-                print(f"[SUPABASE] ⚠️  Error en match_fiscai_documents: {rpc_error}")
-                import traceback
-                traceback.print_exc()
-                # Continuar con fallback
-            
-            # Fallback: intentar con match_documents
-            print("[SUPABASE] Intentando fallback con match_documents...")
+            # Usar match_documents (única función RPC disponible)
+            print("[SUPABASE] Llamando match_documents RPC...")
             response = await asyncio.to_thread(
                 lambda: self.client.rpc('match_documents', payload).execute()
             )
@@ -177,7 +157,7 @@ class SupabaseClient:
         metadata: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Guardar mensaje del chat
+        Guardar mensaje del chat en la tabla 'messages'
         
         Args:
             user_id: ID del usuario
@@ -200,7 +180,7 @@ class SupabaseClient:
             }
             
             response = await asyncio.to_thread(
-                self.client.table('chat_history').insert(data).execute
+                self.client.table('messages').insert(data).execute
             )
             
             if response.data:
@@ -217,7 +197,7 @@ class SupabaseClient:
         limit: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        Obtener historial de chat del usuario
+        Obtener historial de chat del usuario desde la tabla 'messages'
         
         Args:
             user_id: ID del usuario
@@ -228,7 +208,7 @@ class SupabaseClient:
         """
         try:
             response = await asyncio.to_thread(
-                self.client.table('chat_history')
+                self.client.table('messages')
                 .select('*')
                 .eq('user_id', user_id)
                 .order('created_at', desc=True)

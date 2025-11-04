@@ -284,6 +284,343 @@ async def search_fiscal_documents(request: SearchDocumentsRequest) -> Dict[str, 
         }
 
 
+# ====== NUEVAS HERRAMIENTAS: EMBEDDINGS Y ALMACENAMIENTO ======
+
+@mcp.tool()
+async def generate_embedding(text: str) -> Dict[str, Any]:
+    """
+    Genera un embedding vector a partir de texto usando Google Gemini.
+    
+    Convierte texto en un vector numérico de alta dimensionalidad
+    que captura el significado semántico del contenido.
+    
+    Args:
+        text: El texto para convertir en embedding
+        
+    Returns:
+        Dict con el embedding generado, dimensiones y metadata
+    """
+    print(f"\n{'='*60}")
+    print("🎯 TOOL: generate_embedding")
+    print(f"{'='*60}")
+    print(f"📥 Input: {len(text) if text else 0} caracteres")
+    print(f"   Preview: {text[:50] if text else '(vacío)'}...")
+    
+    if not text or not text.strip():
+        print("❌ Validación fallida: texto vacío")
+        print(f"{'='*60}\n")
+        return {
+            "success": False,
+            "error": "El texto no puede estar vacío"
+        }
+    
+    try:
+        print(f"🔄 Generando embedding con Gemini...")
+        print(f"   📐 Modelo: {config.GEMINI_EMBED_MODEL}")
+        print(f"   🎯 Task type: RETRIEVAL_QUERY")
+        print(f"   📊 Dimensiones: {config.EMBED_DIM}")
+        
+        # Generar embedding usando el cliente existente
+        embedding = await gemini_client.generate_embedding(text)
+        
+        actual_dim = len(embedding)
+        
+        print(f"✅ Embedding generado exitosamente")
+        print(f"   📊 Dimensiones: {actual_dim}")
+        print(f"   📝 Longitud texto: {len(text)}")
+        print(f"   🔢 Primeros 5 valores: {embedding[:5]}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": True,
+            "embedding": embedding,
+            "dimension": actual_dim,
+            "text_length": len(text),
+            "model": config.GEMINI_EMBED_MODEL,
+            "text_preview": text[:100] + ("..." if len(text) > 100 else "")
+        }
+    
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR generando embedding: {error_details}")
+        print(f"   🔍 Tipo: {type(e).__name__}")
+        
+        # Mensajes de error útiles
+        if "API_KEY" in error_details.upper() or "PERMISSION" in error_details.upper():
+            hint = "Verifica que GEMINI_API_KEY sea válida y tenga permisos"
+        elif "QUOTA" in error_details.upper():
+            hint = "Has excedido tu cuota de API. Verifica en Google Cloud Console"
+        elif "INTERNET" in error_details.lower() or "CONNECTION" in error_details.lower():
+            hint = "Sin conexión a internet. Verifica tu conectividad"
+        else:
+            hint = "Error desconocido. Revisa los logs del servidor"
+        
+        print(f"   💡 {hint}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": False,
+            "error": f"Error generando embedding: {error_details}",
+            "hint": hint
+        }
+
+
+@mcp.tool()
+async def store_document(
+    text: str,
+    classroom_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Genera un embedding y almacena el documento en Supabase.
+    
+    Convierte el texto en embedding y lo guarda en la base de datos.
+    La tabla 'documents' solo soporta: content, embedding, classroom_id.
+    
+    Args:
+        text: Contenido del documento
+        classroom_id: UUID del classroom (opcional, para filtrado por aula)
+        
+    Returns:
+        Dict con el resultado de la operación y el ID del documento creado
+    """
+    print(f"\n{'='*60}")
+    print("🎯 TOOL: store_document")
+    print(f"{'='*60}")
+    print(f"📥 Parámetros:")
+    print(f"   - Longitud texto: {len(text) if text else 0} caracteres")
+    print(f"   - classroom_id: {classroom_id or 'None (global)'}")
+    
+    print(f"\n📝 Iniciando proceso de almacenamiento...")
+    
+    # Paso 1: Generar embedding
+    print("   🔄 PASO 1: Generando embedding del texto...")
+    embedding_result = await generate_embedding(text)
+    
+    if not embedding_result.get("success"):
+        print(f"   ❌ Fallo al generar embedding")
+        print(f"{'='*60}\n")
+        return embedding_result
+    
+    print(f"   ✅ Embedding generado ({embedding_result.get('dimension')} dims)")
+    
+    try:
+        # Paso 2: Preparar datos para insertar
+        print("   🔄 PASO 2: Preparando datos para Supabase...")
+        data = {
+            "content": text,
+            "embedding": embedding_result["embedding"]
+        }
+        print(f"   📦 Datos base preparados (content + embedding)")
+        
+        # Agregar classroom_id si está presente
+        if classroom_id is not None:
+            data["classroom_id"] = classroom_id
+            print(f"   📌 classroom_id: {classroom_id}")
+        
+        # Paso 3: Insertar en Supabase
+        print(f"   💾 PASO 3: Insertando en tabla 'documents'...")
+        print(f"   📊 Dimensiones embedding: {len(embedding_result['embedding'])}")
+        print(f"   📄 Longitud contenido: {len(text)} chars")
+        
+        # Usar el cliente de supabase existente (tabla documents)
+        result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("documents").insert(data).execute()
+        )
+        
+        print(f"   ✅ INSERT ejecutado exitosamente")
+        
+        if not result.data:
+            raise Exception("No se recibieron datos de Supabase después de insertar")
+        
+        doc_id = result.data[0]['id']
+        doc_classroom = result.data[0].get("classroom_id")
+        
+        print(f"✅ Documento almacenado exitosamente")
+        print(f"   🆔 ID: {doc_id}")
+        print(f"   📚 Classroom: {doc_classroom or 'None (global)'}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": True,
+            "message": "Documento almacenado exitosamente",
+            "document_id": doc_id,
+            "classroom_id": doc_classroom,
+            "embedding_dimension": embedding_result["dimension"],
+            "content_preview": text[:100] + "..." if len(text) > 100 else text
+        }
+    
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR almacenando en Supabase: {error_details}")
+        print(f"   🔍 Tipo: {type(e).__name__}")
+        
+        # Mensajes de error útiles
+        if "expected 768 dimensions" in error_details:
+            hint = (
+                f"Tu tabla espera 768 dimensiones pero estamos usando {config.EMBED_DIM}. "
+                "Actualiza la configuración de la tabla en Supabase"
+            )
+        elif "violates foreign key" in error_details:
+            hint = f"El classroom_id '{classroom_id}' no existe en la tabla classrooms"
+        elif "duplicate key" in error_details:
+            hint = "Ya existe un documento con este ID"
+        else:
+            hint = "Verifica que la tabla 'documents' exista con las columnas correctas"
+        
+        print(f"   💡 {hint}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": False,
+            "error": f"Error almacenando documento: {error_details}",
+            "hint": hint
+        }
+
+
+@mcp.tool()
+async def search_similar_documents(
+    query_text: str,
+    classroom_id: Optional[str] = None,
+    limit: int = 5,
+    threshold: Optional[float] = None
+) -> Dict[str, Any]:
+    """
+    Busca documentos similares usando búsqueda semántica por embeddings.
+    
+    Genera un embedding del query y busca los documentos más similares
+    en la base de datos usando distancia coseno.
+    
+    Args:
+        query_text: Texto de consulta para buscar documentos similares
+        classroom_id: UUID del classroom para filtrar (opcional)
+        limit: Número máximo de resultados (default: 5)
+        threshold: Umbral mínimo de similitud 0-1 (default: 0.6 desde config)
+        
+    Returns:
+        Dict con los documentos similares encontrados y metadata
+    """
+    print(f"\n{'='*60}")
+    print("🎯 TOOL: search_similar_documents")
+    print(f"{'='*60}")
+    print(f"📥 Parámetros:")
+    print(f"   - Query: '{query_text[:50]}...'")
+    print(f"   - classroom_id: {classroom_id or 'None (búsqueda global)'}")
+    print(f"   - limit: {limit}")
+    print(f"   - threshold: {threshold or config.SIMILARITY_THRESHOLD}")
+    
+    # Usar threshold de config si no se proporciona
+    if threshold is None:
+        threshold = config.SIMILARITY_THRESHOLD
+    
+    print(f"\n🔍 Iniciando búsqueda...")
+    
+    # Paso 1: Generar embedding del query
+    print("   🔄 PASO 1: Generando embedding del query...")
+    embedding_result = await generate_embedding(query_text)
+    
+    if not embedding_result.get("success"):
+        print(f"   ❌ Fallo al generar embedding")
+        print(f"{'='*60}\n")
+        return embedding_result
+    
+    print(f"   ✅ Embedding del query generado ({embedding_result.get('dimension')} dims)")
+    
+    try:
+        # Paso 2: Buscar documentos usando el cliente de supabase
+        print(f"   🔄 PASO 2: Buscando en Supabase...")
+        
+        # Determinar qué función RPC usar
+        if classroom_id is not None:
+            print(f"   📞 Usando match_documents_by_classroom (filtrado)")
+            print(f"   📊 Parámetros: threshold={threshold}, limit={limit}, classroom={classroom_id}")
+            
+            result = await asyncio.to_thread(
+                lambda: supabase_client.client.rpc(
+                    'match_documents_by_classroom',
+                    {
+                        'query_embedding': embedding_result["embedding"],
+                        'match_threshold': threshold,
+                        'match_count': limit,
+                        'filter_classroom_id': classroom_id
+                    }
+                ).execute()
+            )
+        else:
+            print(f"   📞 Usando búsqueda global")
+            
+            # Usar el método existente del cliente
+            documents = await supabase_client.search_similar_documents(
+                embedding=embedding_result["embedding"],
+                limit=limit,
+                threshold=threshold
+            )
+            
+            count = len(documents)
+            print(f"✅ Búsqueda completada: {count} documentos encontrados")
+            if count > 0:
+                print(f"   📄 IDs: {[doc.get('id') for doc in documents[:3]]}")
+                print(f"   📊 Similitudes: {[round(doc.get('similarity', 0), 3) for doc in documents[:3]]}")
+            print(f"{'='*60}\n")
+            
+            return {
+                "success": True,
+                "query": query_text,
+                "results": documents,
+                "count": count,
+                "threshold_used": threshold,
+                "embedding_dimension": embedding_result["dimension"]
+            }
+        
+        # Si se usó RPC directo (con classroom_id)
+        print(f"   ✅ RPC ejecutado")
+        documents = result.data if result.data else []
+        count = len(documents)
+        
+        print(f"✅ Búsqueda completada: {count} documentos encontrados")
+        if count > 0:
+            print(f"   📄 IDs: {[doc.get('id') for doc in documents[:3]]}")
+            print(f"   📊 Similitudes: {[round(doc.get('similarity', 0), 3) for doc in documents[:3]]}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": True,
+            "query": query_text,
+            "classroom_id": classroom_id,
+            "results": documents,
+            "count": count,
+            "threshold_used": threshold,
+            "embedding_dimension": embedding_result["dimension"]
+        }
+    
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR en búsqueda: {error_details}")
+        print(f"   🔍 Tipo: {type(e).__name__}")
+        
+        # Mensajes de error útiles
+        if "function" in error_details.lower() and "does not exist" in error_details.lower():
+            hint = (
+                "La función match_documents o match_documents_by_classroom no existe. "
+                "Crea estas funciones en Supabase"
+            )
+        elif "expected 768 dimensions" in error_details:
+            hint = (
+                f"La función espera 768 dimensiones pero usamos {config.EMBED_DIM}. "
+                "Actualiza las funciones en Supabase"
+            )
+        else:
+            hint = "Verifica los logs de Supabase para más detalles"
+        
+        print(f"   💡 {hint}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": False,
+            "error": f"Error en búsqueda: {error_details}",
+            "hint": hint
+        }
+
+
 @mcp.tool()
 async def search_places_tool(request: Dict[str, Any]) -> Dict[str, Any]:
     """

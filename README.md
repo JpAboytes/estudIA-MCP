@@ -19,6 +19,7 @@ El núcleo está implementado con `fastmcp` (instancia `mcp` en `src/main.py`) y
 - Búsqueda semántica de documentos fiscales en Supabase.
 - Análisis de riesgo fiscal y generación de roadmap de formalización.
 - Predicción de crecimiento del negocio con un modelo entrenado (en `src/modelDemo`).
+- **NUEVO:** Herramientas de embeddings y almacenamiento (`generate_embedding`, `store_document`, `search_similar_documents`) - Ver [NUEVAS_HERRAMIENTAS.md](./NUEVAS_HERRAMIENTAS.md)
 
 ## Estructura del repositorio (resumen)
 
