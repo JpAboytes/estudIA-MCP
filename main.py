@@ -64,7 +64,8 @@ def generate_embedding(text: str) -> dict:
         result = genai.embed_content(
             model=gemini_model,
             content=text,
-            task_type="retrieval_document"
+            task_type="retrieval_document",
+            output_dimensionality=768,
         )
         
         embedding = result['embedding']
