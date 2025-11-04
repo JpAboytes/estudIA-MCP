@@ -1,13 +1,11 @@
-import os
 import sys
 from typing import Optional
-from dotenv import load_dotenv
 from fastmcp import FastMCP
 import google.generativeai as genai
 from supabase import create_client, Client
 
-# Cargar variables de entorno
-load_dotenv()
+# Importar configuración centralizada
+from config import config
 
 # Inicializar FastMCP
 mcp = FastMCP("estudIA-MCP")
@@ -16,31 +14,26 @@ mcp = FastMCP("estudIA-MCP")
 supabase_client: Optional[Client] = None
 gemini_model = None
 
-# Variables de configuración
-EMBEDDING_DIMENSION = 768  # gemini-embedding-001 genera 768 dimensiones
-
 
 def initialize_clients():
     """Inicializa los clientes de Supabase y Gemini con validación robusta"""
     global supabase_client, gemini_model
     
-    print("\n" + "="*60)
-    print("🔧 Inicializando clientes...")
-    print("="*60)
+    print("\n" + "="*70)
+    print("🔧 INICIALIZANDO CLIENTES")
+    print("="*70)
     
     # ============= CONFIGURAR SUPABASE =============
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_KEY")
+    print(f"\n📊 Supabase:")
+    print(f"   URL: {config.SUPABASE_URL[:30] + '...' if config.SUPABASE_URL else '❌ NOT SET'}")
+    print(f"   Key: {'✓ SET' if config.SUPABASE_KEY else '❌ NOT SET'}")
     
-    print(f"\n📊 Supabase Configuration:")
-    print(f"   URL: {supabase_url[:30] + '...' if supabase_url else '❌ NOT SET'}")
-    print(f"   Key: {'✓ SET' if supabase_key else '❌ NOT SET'}")
-    
-    if not supabase_url or not supabase_key:
+    if not config.SUPABASE_URL or not config.SUPABASE_KEY:
         print("   ⚠️  WARNING: Supabase no configurado - store_document y search no funcionarán")
+        supabase_client = None
     else:
         try:
-            supabase_client = create_client(supabase_url, supabase_key)
+            supabase_client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
             # Validar conexión intentando listar tablas
             test = supabase_client.table("documents").select("id").limit(1).execute()
             print("   ✅ Conexión exitosa a Supabase")
@@ -50,12 +43,10 @@ def initialize_clients():
             supabase_client = None
     
     # ============= CONFIGURAR GEMINI =============
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    print(f"\n🤖 Gemini AI:")
+    print(f"   API Key: {'✓ SET (' + config.GEMINI_API_KEY[:10] + '...' + config.GEMINI_API_KEY[-5:] + ')' if config.GEMINI_API_KEY else '❌ NOT SET'}")
     
-    print(f"\n🤖 Gemini Configuration:")
-    print(f"   API Key: {'✓ SET (' + gemini_api_key[:10] + '...' + gemini_api_key[-5:] + ')' if gemini_api_key else '❌ NOT SET'}")
-    
-    if not gemini_api_key:
+    if not config.GEMINI_API_KEY:
         print("   ❌ ERROR: GEMINI_API_KEY no encontrada en variables de entorno")
         print("   💡 Solución:")
         print("      1. Verifica que el archivo .env existe en la raíz del proyecto")
@@ -65,14 +56,15 @@ def initialize_clients():
         gemini_model = None
     else:
         try:
-            genai.configure(api_key=gemini_api_key)
-            gemini_model = "models/gemini-embedding-001"
+            genai.configure(api_key=config.GEMINI_API_KEY)
+            gemini_model = config.GEMINI_EMBED_MODEL
             
-            # Validar que la API funciona generando un embedding de prueba
+            # Validar que la API funciona generando un embedding de prueba CON las dimensiones configuradas
             test_result = genai.embed_content(
                 model=gemini_model,
                 content="test",
-                task_type="retrieval_document"
+                task_type="retrieval_document",
+                output_dimensionality=config.EMBED_DIM  # Usar dimensiones configuradas
             )
             
             actual_dim = len(test_result['embedding'])
@@ -80,8 +72,9 @@ def initialize_clients():
             print(f"   📐 Modelo: {gemini_model}")
             print(f"   📊 Dimensiones: {actual_dim}")
             
-            if actual_dim != EMBEDDING_DIMENSION:
-                print(f"   ⚠️  WARNING: Dimensión detectada ({actual_dim}) != esperada ({EMBEDDING_DIMENSION})")
+            if actual_dim != config.EMBED_DIM:
+                print(f"   ⚠️  WARNING: Dimensión generada ({actual_dim}) != configurada ({config.EMBED_DIM})")
+                print(f"   💡 Verifica EMBED_DIM en .env")
                 
         except Exception as e:
             print(f"   ❌ ERROR al configurar Gemini API: {str(e)}")
@@ -92,12 +85,17 @@ def initialize_clients():
             gemini_model = None
     
     # ============= RESUMEN DE ESTADO =============
-    print(f"\n{'='*60}")
+    print(f"\n{'='*70}")
     print("📋 Estado final de inicialización:")
-    print(f"{'='*60}")
+    print(f"{'='*70}")
+    print(f"   Entorno:  {config.NODE_ENV}")
+    print(f"   Puerto:   {config.PORT}")
     print(f"   Supabase: {'✅ OK' if supabase_client else '❌ NO DISPONIBLE'}")
     print(f"   Gemini:   {'✅ OK' if gemini_model else '❌ NO DISPONIBLE'}")
-    print(f"{'='*60}\n")
+    print(f"   Dimensiones: {config.EMBED_DIM}")
+    print(f"   Umbral similitud: {config.SIMILARITY_THRESHOLD}")
+    print(f"   Top-K docs: {config.TOPK_DOCUMENTS}")
+    print(f"{'='*70}\n")
     
     if not gemini_model:
         print("🚨 CRITICAL: Gemini API no disponible - el servidor no funcionará correctamente")
@@ -137,18 +135,22 @@ def generate_embedding(text: str) -> dict:
     try:
         print(f"🔄 Generando embedding para texto de {len(text)} caracteres...")
         
-        # Generar embedding usando Gemini con dimensiones correctas
+        # Generar embedding usando Gemini con dimensiones especificadas
         result = genai.embed_content(
             model=gemini_model,
             content=text,
-            task_type="retrieval_document"
-            # No especificamos output_dimensionality para usar el default del modelo (3072)
+            task_type="retrieval_document",
+            output_dimensionality=config.EMBED_DIM  # Especificar dimensiones según configuración
         )
         
         embedding = result['embedding']
         actual_dim = len(embedding)
         
         print(f"✅ Embedding generado: {actual_dim} dimensiones")
+        
+        # Validar que las dimensiones coinciden con la configuración
+        if actual_dim != config.EMBED_DIM:
+            print(f"⚠️  WARNING: Dimensión generada ({actual_dim}) != configurada ({config.EMBED_DIM})")
         
         return {
             "success": True,
@@ -402,7 +404,7 @@ def main():
     # Mostrar herramientas disponibles
     print("📚 Tools disponibles:")
     print("   1. generate_embedding")
-    print("      → Genera embeddings desde texto (3072 dimensiones)")
+    print(f"      → Genera embeddings desde texto ({config.EMBED_DIM} dimensiones)")
     print("   2. store_document")
     print("      → Almacena documentos con embeddings en Supabase")
     print("   3. search_similar_documents")
