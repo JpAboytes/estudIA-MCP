@@ -29,24 +29,15 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="ID del usuario para mantener contexto")
     session_id: Optional[str] = Field(None, description="ID de sesión para el chat")
 
-# ====== HERRAMIENTAS MCP ======
+# ====== FUNCIONES AUXILIARES INTERNAS ======
 
-@mcp.tool()
-async def generate_embedding(text: str) -> Dict[str, Any]:
+async def _generate_embedding_internal(text: str) -> Dict[str, Any]:
     """
-    Genera un embedding vector a partir de texto usando Google Gemini.
-    
-    Convierte texto en un vector numérico de alta dimensionalidad
-    que captura el significado semántico del contenido.
-    
-    Args:
-        text: El texto para convertir en embedding
-        
-    Returns:
-        Dict con el embedding generado, dimensiones y metadata
+    Función interna para generar embeddings.
+    Esta función contiene la lógica real y puede ser llamada por otras funciones.
     """
     print(f"\n{'='*60}")
-    print("🎯 TOOL: generate_embedding")
+    print("🎯 INTERNAL: generate_embedding")
     print(f"{'='*60}")
     print(f"📥 Input: {len(text) if text else 0} caracteres")
     
@@ -87,6 +78,120 @@ async def generate_embedding(text: str) -> Dict[str, Any]:
         }
 
 
+async def _search_similar_chunks_internal(
+    query_text: str,
+    classroom_id: str,
+    limit: int = 10,
+    threshold: float = 0.3
+) -> Dict[str, Any]:
+    """
+    Función interna para buscar chunks similares.
+    Esta función contiene la lógica real y puede ser llamada por otras funciones.
+    """
+    print(f"\n{'='*60}")
+    print("🎯 INTERNAL: search_similar_chunks")
+    print(f"{'='*60}")
+    print(f"📥 Parámetros:")
+    print(f"   - query_text: {query_text[:50]}...")
+    print(f"   - classroom_id: {classroom_id}")
+    print(f"   - limit: {limit}")
+    print(f"   - threshold: {threshold}")
+    
+    # Paso 1: Generar embedding de la consulta
+    print("   🔄 PASO 1: Generando embedding de la query...")
+    embedding_result = await _generate_embedding_internal(query_text)
+    
+    if not embedding_result.get("success"):
+        print(f"   ❌ Fallo al generar embedding")
+        return embedding_result
+    
+    query_embedding = embedding_result["embedding"]
+    print(f"   ✅ Embedding de query generado ({len(query_embedding)} dims)")
+    
+    try:
+        # Paso 2: Buscar con la RPC function en Supabase
+        print(f"   🔍 PASO 2: Ejecutando búsqueda semántica...")
+        print(f"      📊 Usando RPC: search_classroom_chunks")
+        
+        result = await asyncio.to_thread(
+            lambda: supabase_client.client.rpc(
+                'search_classroom_chunks',
+                {
+                    'query_embedding': query_embedding,
+                    'p_classroom_id': classroom_id,
+                    'match_threshold': threshold,
+                    'match_count': limit
+                }
+            ).execute()
+        )
+        
+        print(f"   ✅ RPC ejecutado exitosamente")
+        
+        if not result.data:
+            print(f"   ℹ️  No se encontraron chunks relevantes (threshold: {threshold})")
+            hint = "Intenta bajar el threshold o verificar que hay documentos en el classroom"
+            return {
+                "success": True,
+                "results": [],
+                "message": "No se encontraron chunks relevantes",
+                "hint": hint
+            }
+        
+        # Formatear resultados
+        results = []
+        for row in result.data:
+            results.append({
+                "chunk_id": row.get("id"),
+                "classroom_document_id": row.get("classroom_document_id"),
+                "chunk_index": row.get("chunk_index"),
+                "content": row.get("content"),
+                "similarity": row.get("similarity")
+            })
+        
+        print(f"✅ Búsqueda completada")
+        print(f"   📊 Chunks encontrados: {len(results)}")
+        for i, r in enumerate(results[:3], start=1):
+            print(f"   {i}. Similarity: {r['similarity']:.3f} | Doc: {r['classroom_document_id']}")
+        
+        return {
+            "success": True,
+            "results": results,
+            "query_text": query_text,
+            "classroom_id": classroom_id,
+            "total_results": len(results)
+        }
+        
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR en búsqueda: {error_details}")
+        hint = "Verifica que la RPC function 'search_classroom_chunks' existe en Supabase"
+        
+        return {
+            "success": False,
+            "error": f"Error en búsqueda: {error_details}",
+            "hint": hint
+        }
+
+
+# ====== HERRAMIENTAS MCP ======
+
+@mcp.tool()
+async def generate_embedding(text: str) -> Dict[str, Any]:
+    """
+    Genera un embedding vector a partir de texto usando Google Gemini.
+    
+    Convierte texto en un vector numérico de alta dimensionalidad
+    que captura el significado semántico del contenido.
+    
+    Args:
+        text: El texto para convertir en embedding
+        
+    Returns:
+        Dict con el embedding generado, dimensiones y metadata
+    """
+    return await _generate_embedding_internal(text)
+
+
 @mcp.tool()
 async def store_document_chunk(
     classroom_document_id: str,
@@ -120,7 +225,7 @@ async def store_document_chunk(
     
     # Paso 1: Generar embedding del chunk
     print("   🔄 PASO 1: Generando embedding del chunk...")
-    embedding_result = await generate_embedding(content)
+    embedding_result = await _generate_embedding_internal(content)
     
     if not embedding_result.get("success"):
         print(f"   ❌ Fallo al generar embedding")
@@ -220,7 +325,7 @@ async def search_similar_chunks(
     
     # Paso 1: Generar embedding del query
     print("   🔄 PASO 1: Generando embedding del query...")
-    embedding_result = await generate_embedding(query_text)
+    embedding_result = await _generate_embedding_internal(query_text)
     
     if not embedding_result.get("success"):
         print(f"   ❌ Fallo al generar embedding")
@@ -306,11 +411,8 @@ async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
         print(f"   - Classroom ID: {request.classroom_id}")
         print(f"   - User ID: {request.user_id or 'Anonymous'}")
         
-        # Generar embedding para encontrar chunks relevantes
-        embedding = await gemini_client.generate_embedding(request.message)
-        
         # Buscar chunks relevantes en el classroom
-        search_result = await search_similar_chunks(
+        search_result = await _search_similar_chunks_internal(
             query_text=request.message,
             classroom_id=request.classroom_id,
             limit=5,
