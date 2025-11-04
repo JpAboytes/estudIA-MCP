@@ -104,6 +104,26 @@ class GeminiClient:
     def __init__(self):
         self.model = genai.GenerativeModel(config.GEMINI_MODEL)
     
+    async def generate_text(self, prompt: str) -> str:
+        """
+        Genera texto simple usando Gemini
+        
+        Args:
+            prompt: Prompt para generar texto
+            
+        Returns:
+            Texto generado por Gemini
+        """
+        try:
+            response = await asyncio.to_thread(
+                self.model.generate_content,
+                prompt
+            )
+            return response.text if response.text else "No se pudo generar respuesta"
+        except Exception as error:
+            print(f"Error generando texto: {error}")
+            raise error
+    
     async def generate_embedding(self, text: str) -> List[float]:
         """
         Genera embedding para un texto usando Gemini
