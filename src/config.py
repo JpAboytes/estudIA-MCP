@@ -1,5 +1,6 @@
 """
-Configuración para el servidor MCP de FiscAI
+Configuración para el servidor MCP de EstudIA
+Sistema tipo NotebookLM para gestión de documentos educativos
 """
 import os
 from typing import Optional
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    """Configuración centralizada para FiscAI MCP Server"""
+    """Configuración centralizada para EstudIA MCP Server"""
     
     # Configuración del servidor
     PORT: int = int(os.getenv('PORT', '8000'))

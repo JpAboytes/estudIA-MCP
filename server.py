@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Punto de entrada para deployment de FiscAI MCP Server
+Punto de entrada para deployment de EstudIA MCP Server
+Sistema tipo NotebookLM para gestión de documentos educativos por aula
+
 Este archivo expone el objeto FastMCP para servicios de hosting
 """
 
@@ -41,7 +43,8 @@ if missing_vars:
 
 try:
     from src.main import mcp
-    print("🚀 FiscAI MCP Server iniciado correctamente")
+    print("🚀 EstudIA MCP Server iniciado correctamente")
+    print("📚 Sistema tipo NotebookLM para documentos educativos")
 except Exception as e:
     print(f"❌ Error importando el servidor MCP: {e}")
     raise
