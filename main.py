@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import Optional
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -15,31 +16,92 @@ mcp = FastMCP("estudIA-MCP")
 supabase_client: Optional[Client] = None
 gemini_model = None
 
+# Variables de configuración
+EMBEDDING_DIMENSION = 768  # gemini-embedding-001 genera 768 dimensiones
+
 
 def initialize_clients():
-    """Inicializa los clientes de Supabase y Gemini"""
+    """Inicializa los clientes de Supabase y Gemini con validación robusta"""
     global supabase_client, gemini_model
     
-    # Configurar Supabase
+    print("\n" + "="*60)
+    print("🔧 Inicializando clientes...")
+    print("="*60)
+    
+    # ============= CONFIGURAR SUPABASE =============
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
     
-    if supabase_url and supabase_key:
-        supabase_client = create_client(supabase_url, supabase_key)
-    else:
-        print("⚠ Warning: SUPABASE_URL or SUPABASE_KEY not found in environment")
+    print(f"\n📊 Supabase Configuration:")
+    print(f"   URL: {supabase_url[:30] + '...' if supabase_url else '❌ NOT SET'}")
+    print(f"   Key: {'✓ SET' if supabase_key else '❌ NOT SET'}")
     
-    # Configurar Gemini
+    if not supabase_url or not supabase_key:
+        print("   ⚠️  WARNING: Supabase no configurado - store_document y search no funcionarán")
+    else:
+        try:
+            supabase_client = create_client(supabase_url, supabase_key)
+            # Validar conexión intentando listar tablas
+            test = supabase_client.table("documents").select("id").limit(1).execute()
+            print("   ✅ Conexión exitosa a Supabase")
+        except Exception as e:
+            print(f"   ❌ ERROR al conectar con Supabase: {str(e)}")
+            print(f"   💡 Verifica que SUPABASE_URL y SUPABASE_KEY sean correctos")
+            supabase_client = None
+    
+    # ============= CONFIGURAR GEMINI =============
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     
-    if gemini_api_key:
-        genai.configure(api_key=gemini_api_key)
-        # Usar el modelo de embeddings actualizado de Google Gemini
-        gemini_model = "models/gemini-embedding-001"
-        print("✓ Gemini API initialized")
-        print(f"  Modelo: {gemini_model}")
+    print(f"\n🤖 Gemini Configuration:")
+    print(f"   API Key: {'✓ SET (' + gemini_api_key[:10] + '...' + gemini_api_key[-5:] + ')' if gemini_api_key else '❌ NOT SET'}")
+    
+    if not gemini_api_key:
+        print("   ❌ ERROR: GEMINI_API_KEY no encontrada en variables de entorno")
+        print("   💡 Solución:")
+        print("      1. Verifica que el archivo .env existe en la raíz del proyecto")
+        print("      2. Verifica que contiene: GEMINI_API_KEY=tu_api_key_aqui")
+        print("      3. Si estás en producción, configura la variable de entorno del sistema")
+        print("   🔗 Obtén tu API Key en: https://makersuite.google.com/app/apikey")
+        gemini_model = None
     else:
-        print("⚠ Warning: GEMINI_API_KEY not found in environment")
+        try:
+            genai.configure(api_key=gemini_api_key)
+            gemini_model = "models/gemini-embedding-001"
+            
+            # Validar que la API funciona generando un embedding de prueba
+            test_result = genai.embed_content(
+                model=gemini_model,
+                content="test",
+                task_type="retrieval_document"
+            )
+            
+            actual_dim = len(test_result['embedding'])
+            print(f"   ✅ Gemini API conectada exitosamente")
+            print(f"   📐 Modelo: {gemini_model}")
+            print(f"   📊 Dimensiones: {actual_dim}")
+            
+            if actual_dim != EMBEDDING_DIMENSION:
+                print(f"   ⚠️  WARNING: Dimensión detectada ({actual_dim}) != esperada ({EMBEDDING_DIMENSION})")
+                
+        except Exception as e:
+            print(f"   ❌ ERROR al configurar Gemini API: {str(e)}")
+            print(f"   💡 Posibles causas:")
+            print(f"      - API Key inválida o revocada")
+            print(f"      - Sin conexión a internet")
+            print(f"      - Cuota de API agotada")
+            gemini_model = None
+    
+    # ============= RESUMEN DE ESTADO =============
+    print(f"\n{'='*60}")
+    print("📋 Estado final de inicialización:")
+    print(f"{'='*60}")
+    print(f"   Supabase: {'✅ OK' if supabase_client else '❌ NO DISPONIBLE'}")
+    print(f"   Gemini:   {'✅ OK' if gemini_model else '❌ NO DISPONIBLE'}")
+    print(f"{'='*60}\n")
+    
+    if not gemini_model:
+        print("🚨 CRITICAL: Gemini API no disponible - el servidor no funcionará correctamente")
+        print("   Por favor, configura GEMINI_API_KEY antes de continuar\n")
 
 
 @mcp.tool()
@@ -54,33 +116,67 @@ def generate_embedding(text: str) -> dict:
         Un diccionario con el embedding y metadata
     """
     if not gemini_model:
+        error_msg = (
+            "❌ Gemini API no está configurada correctamente. "
+            "GEMINI_API_KEY no fue encontrada o la inicialización falló. "
+            "Verifica los logs de inicio del servidor para más detalles."
+        )
+        print(f"\n🚨 ERROR en generate_embedding: {error_msg}\n")
         return {
-            "error": "Gemini API no está configurada. Verifica tu GEMINI_API_KEY"
+            "success": False,
+            "error": error_msg,
+            "hint": "Configura GEMINI_API_KEY en tu archivo .env o variables de entorno"
+        }
+    
+    if not text or not text.strip():
+        return {
+            "success": False,
+            "error": "El texto no puede estar vacío"
         }
     
     try:
-        # Generar embedding usando Gemini
+        print(f"🔄 Generando embedding para texto de {len(text)} caracteres...")
+        
+        # Generar embedding usando Gemini con dimensiones correctas
         result = genai.embed_content(
             model=gemini_model,
             content=text,
-            task_type="retrieval_document",
-            output_dimensionality=768,
+            task_type="retrieval_document"
+            # No especificamos output_dimensionality para usar el default del modelo (3072)
         )
         
         embedding = result['embedding']
+        actual_dim = len(embedding)
+        
+        print(f"✅ Embedding generado: {actual_dim} dimensiones")
         
         return {
             "success": True,
             "embedding": embedding,
-            "dimension": len(embedding),
+            "dimension": actual_dim,
             "text_length": len(text),
-            "model": gemini_model
+            "model": gemini_model,
+            "text_preview": text[:100] + ("..." if len(text) > 100 else "")
         }
     
     except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR generando embedding: {error_details}\n")
+        
+        # Proporcionar mensajes de error más útiles
+        if "API_KEY" in error_details.upper() or "PERMISSION" in error_details.upper():
+            hint = "Verifica que tu GEMINI_API_KEY sea válida y tenga permisos"
+        elif "QUOTA" in error_details.upper():
+            hint = "Has excedido tu cuota de API. Verifica en Google Cloud Console"
+        elif "INTERNET" in error_details.lower() or "CONNECTION" in error_details.lower():
+            hint = "Sin conexión a internet. Verifica tu conectividad"
+        else:
+            hint = "Error desconocido. Revisa los logs del servidor"
+        
         return {
             "success": False,
-            "error": f"Error generando embedding: {str(e)}"
+            "error": f"Error generando embedding: {error_details}",
+            "hint": hint
         }
 
 
@@ -97,14 +193,23 @@ def store_document(text: str, classroom_id: str = None) -> dict:
         Resultado de la operación
     """
     if not supabase_client:
+        error_msg = (
+            "Supabase client no está configurado. "
+            "Verifica SUPABASE_URL y SUPABASE_KEY en tus variables de entorno"
+        )
+        print(f"\n🚨 ERROR en store_document: {error_msg}\n")
         return {
-            "error": "Supabase client no está configurado. Verifica SUPABASE_URL y SUPABASE_KEY"
+            "success": False,
+            "error": error_msg
         }
+    
+    print(f"\n📝 Almacenando documento (classroom_id: {classroom_id or 'None'})...")
     
     # Generar embedding
     embedding_result = generate_embedding(text)
     
     if not embedding_result.get("success"):
+        print(f"❌ Fallo al generar embedding")
         return embedding_result
     
     try:
@@ -118,21 +223,46 @@ def store_document(text: str, classroom_id: str = None) -> dict:
         if classroom_id is not None:
             data["classroom_id"] = classroom_id
         
+        print(f"💾 Insertando en Supabase (dimensiones: {len(embedding_result['embedding'])})...")
+        
         # Insertar en Supabase tabla documents
         result = supabase_client.table("documents").insert(data).execute()
+        
+        if not result.data:
+            raise Exception("No se recibieron datos de Supabase después de insertar")
+        
+        print(f"✅ Documento almacenado con ID: {result.data[0]['id']}\n")
         
         return {
             "success": True,
             "message": "Documento almacenado exitosamente",
             "document_id": result.data[0]["id"],
             "classroom_id": result.data[0].get("classroom_id"),
+            "embedding_dimension": embedding_result["dimension"],
             "content_preview": text[:100] + "..." if len(text) > 100 else text
         }
     
     except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR almacenando en Supabase: {error_details}\n")
+        
+        # Mensajes de error más útiles
+        if "expected 768 dimensions" in error_details:
+            hint = (
+                "Tu tabla documents espera 768 dimensiones pero gemini-embedding-001 genera 3072. "
+                "Ejecuta update_vector_dimensions.sql en Supabase para actualizar"
+            )
+        elif "violates foreign key" in error_details:
+            hint = f"El classroom_id '{classroom_id}' no existe en la tabla classrooms"
+        elif "duplicate key" in error_details:
+            hint = "Ya existe un documento con este ID"
+        else:
+            hint = "Verifica que la tabla 'documents' exista con las columnas correctas"
+        
         return {
             "success": False,
-            "error": f"Error almacenando documento en Supabase: {str(e)}"
+            "error": f"Error almacenando documento en Supabase: {error_details}",
+            "hint": hint
         }
 
 
@@ -156,19 +286,27 @@ def search_similar_documents(
         Documentos similares encontrados
     """
     if not supabase_client:
+        error_msg = "Supabase client no está configurado"
+        print(f"\n🚨 ERROR en search_similar_documents: {error_msg}\n")
         return {
-            "error": "Supabase client no está configurado"
+            "success": False,
+            "error": error_msg
         }
+    
+    print(f"\n🔍 Buscando documentos similares a: '{query_text[:50]}...'")
+    print(f"   Filtros: classroom_id={classroom_id}, limit={limit}, threshold={threshold}")
     
     # Generar embedding de la consulta
     embedding_result = generate_embedding(query_text)
     
     if not embedding_result.get("success"):
+        print(f"❌ Fallo al generar embedding de búsqueda")
         return embedding_result
     
     try:
         # Si se proporciona classroom_id, usar la función optimizada
         if classroom_id is not None:
+            print(f"   Usando match_documents_by_classroom...")
             result = supabase_client.rpc(
                 'match_documents_by_classroom',
                 {
@@ -179,16 +317,21 @@ def search_similar_documents(
                 }
             ).execute()
             
+            count = len(result.data) if result.data else 0
+            print(f"✅ Encontrados {count} documentos\n")
+            
             return {
                 "success": True,
                 "query": query_text,
                 "classroom_id": classroom_id,
                 "results": result.data if result.data else [],
-                "count": len(result.data) if result.data else 0,
-                "threshold_used": threshold
+                "count": count,
+                "threshold_used": threshold,
+                "embedding_dimension": embedding_result["dimension"]
             }
         
         # Búsqueda general sin filtro de classroom
+        print(f"   Usando match_documents (sin filtro de classroom)...")
         result = supabase_client.rpc(
             'match_documents',
             {
@@ -198,31 +341,85 @@ def search_similar_documents(
             }
         ).execute()
         
+        count = len(result.data) if result.data else 0
+        print(f"✅ Encontrados {count} documentos\n")
+        
         return {
             "success": True,
             "query": query_text,
             "results": result.data if result.data else [],
-            "count": len(result.data) if result.data else 0,
-            "threshold_used": threshold
+            "count": count,
+            "threshold_used": threshold,
+            "embedding_dimension": embedding_result["dimension"]
         }
     
     except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR en búsqueda: {error_details}\n")
+        
+        # Mensajes de error útiles
+        if "function" in error_details.lower() and "does not exist" in error_details.lower():
+            hint = (
+                "La función match_documents o match_documents_by_classroom no existe en Supabase. "
+                "Crea estas funciones usando los scripts SQL proporcionados"
+            )
+        elif "expected 768 dimensions" in error_details:
+            hint = (
+                "La función espera 768 dimensiones pero el embedding tiene 3072. "
+                "Ejecuta update_vector_dimensions.sql para actualizar"
+            )
+        else:
+            hint = "Verifica los logs de Supabase para más detalles"
+        
         return {
             "success": False,
-            "error": f"Error en búsqueda: {str(e)}",
+            "error": f"Error en búsqueda: {error_details}",
+            "hint": hint,
             "note": "Asegúrate de tener configuradas las funciones match_documents en Supabase"
         }
 
 
 def main():
     """Punto de entrada principal"""
+    print("\n" + "🚀" * 30)
+    print(" " * 20 + "estudIA-MCP Server")
+    print("🚀" * 30 + "\n")
+    
+    # Inicializar clientes con validación detallada
     initialize_clients()
-    print("🚀 estudIA-MCP Server iniciado")
+    
+    # Verificar que todo está listo
+    if not gemini_model:
+        print("⛔ FATAL ERROR: No se puede iniciar sin Gemini API")
+        print("   Configura GEMINI_API_KEY y reinicia el servidor\n")
+        sys.exit(1)
+    
+    if not supabase_client:
+        print("⚠️  WARNING: Servidor iniciará sin Supabase")
+        print("   Solo estará disponible: generate_embedding")
+        print("   No disponible: store_document, search_similar_documents\n")
+    
+    # Mostrar herramientas disponibles
     print("📚 Tools disponibles:")
-    print("  - generate_embedding: Genera embeddings desde texto")
-    print("  - store_document: Almacena documentos con embeddings en Supabase")
-    print("  - search_similar_documents: Búsqueda por similitud de documentos")
-    mcp.run()
+    print("   1. generate_embedding")
+    print("      → Genera embeddings desde texto (3072 dimensiones)")
+    print("   2. store_document")
+    print("      → Almacena documentos con embeddings en Supabase")
+    print("   3. search_similar_documents")
+    print("      → Búsqueda por similitud de documentos")
+    
+    print(f"\n{'='*60}")
+    print("✅ Servidor listo para recibir conexiones")
+    print(f"{'='*60}\n")
+    
+    # Iniciar servidor
+    try:
+        mcp.run()
+    except KeyboardInterrupt:
+        print("\n\n👋 Servidor detenido por el usuario")
+    except Exception as e:
+        print(f"\n\n❌ ERROR FATAL: {str(e)}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
