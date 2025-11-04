@@ -671,6 +671,160 @@ async def professor_assistant(question: str, classroom_id: str) -> Dict[str, Any
 
 
 
+async def _analyze_and_update_user_context_impl(
+    user_id: str,
+    session_id: str
+) -> Dict[str, Any]:
+    """
+    Implementación interna de analyze_and_update_user_context.
+    Esta función contiene la lógica real y puede ser llamada directamente.
+    """
+    print(f"\n{'='*70}")
+    print("🎯 TOOL: analyze_and_update_user_context")
+    print(f"{'='*70}")
+    print(f"📥 Parámetros:")
+    print(f"   - User ID: {user_id}")
+    print(f"   - Session ID: {session_id}")
+    
+    try:
+        # PASO 1: Obtener el contexto actual del usuario
+        print(f"\n👤 PASO 1: Obteniendo contexto actual del usuario...")
+        
+        user_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("users")
+            .select("user_context, name, email")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not user_result.data:
+            return {
+                "success": False,
+                "error": "Usuario no encontrado",
+                "user_id": user_id
+            }
+        
+        current_context = user_result.data.get('user_context') or ""
+        user_name = user_result.data.get('name', 'Usuario')
+        
+        print(f"✅ Usuario encontrado: {user_name}")
+        print(f"   📝 Contexto actual: {len(current_context)} caracteres")
+        
+        # PASO 2: Obtener todos los mensajes de la sesión
+        print(f"\n💬 PASO 2: Obteniendo mensajes de la sesión...")
+        
+        messages_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("cubicle_messages")
+            .select("id, user_id, content, created_at")
+            .eq("session_id", session_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        
+        messages = messages_result.data if messages_result.data else []
+        
+        print(f"✅ Encontrados {len(messages)} mensajes en la sesión")
+        
+        if len(messages) == 0:
+            return {
+                "success": True,
+                "message": "No hay mensajes en la sesión para analizar",
+                "context_updated": False,
+                "user_id": user_id,
+                "session_id": session_id
+            }
+        
+        # PASO 3: Analizar la conversación con Gemini
+        print(f"\n🤖 PASO 3: Analizando conversación con Gemini...")
+        print(f"   📊 Total mensajes a analizar: {len(messages)}")
+        
+        analysis = await gemini_client.analyze_conversation_for_context_update(
+            current_context=current_context,
+            conversation_messages=messages
+        )
+        
+        should_update = analysis.get('should_update', False)
+        new_context = analysis.get('new_context', current_context)
+        reasons = analysis.get('reasons', [])
+        key_findings = analysis.get('key_findings', {})
+        
+        print(f"✅ Análisis completado")
+        print(f"   🔄 ¿Debe actualizarse?: {should_update}")
+        print(f"   📋 Razones: {len(reasons)}")
+        
+        # PASO 4: Actualizar el contexto si es necesario
+        if should_update:
+            print(f"\n💾 PASO 4: Actualizando contexto del usuario...")
+            
+            update_result = await asyncio.to_thread(
+                lambda: supabase_client.client.table("users")
+                .update({"user_context": new_context})
+                .eq("id", user_id)
+                .execute()
+            )
+            
+            print(f"✅ Contexto actualizado exitosamente")
+            print(f"   📝 Nuevo contexto: {len(new_context)} caracteres")
+            
+            for i, reason in enumerate(reasons, 1):
+                print(f"   {i}. {reason}")
+        else:
+            print(f"\n⏭️  PASO 4: No se requiere actualización")
+            for reason in reasons:
+                print(f"   • {reason}")
+        
+        print(f"{'='*70}\n")
+        
+        return {
+            "success": True,
+            "context_updated": should_update,
+            "previous_context": current_context,
+            "new_context": new_context if should_update else current_context,
+            "reasons": reasons,
+            "key_findings": key_findings,
+            "messages_analyzed": len(messages),
+            "user_id": user_id,
+            "user_name": user_name,
+            "session_id": session_id,
+            "message": f"Contexto {'actualizado' if should_update else 'sin cambios'}"
+        }
+    
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR: {error_details}")
+        print(f"{'='*70}\n")
+        
+        return {
+            "success": False,
+            "error": f"Error analizando contexto: {error_details}",
+            "user_id": user_id,
+            "session_id": session_id
+        }
+
+
+@mcp.tool()
+async def analyze_and_update_user_context(
+    user_id: str,
+    session_id: str
+) -> Dict[str, Any]:
+    """
+    Analiza la conversación de una sesión de cubículo y actualiza el contexto del usuario.
+    
+    Esta herramienta lee todos los mensajes de la sesión, los analiza junto con el contexto
+    actual del usuario, y determina si debe actualizarse con nueva información relevante
+    sobre nivel educativo, estilo de aprendizaje, preferencias, etc.
+    
+    Args:
+        user_id: UUID del usuario cuyo contexto se analizará
+        session_id: UUID de la sesión del cubículo con la conversación
+        
+    Returns:
+        Dict con el resultado del análisis y si se actualizó el contexto
+    """
+    return await _analyze_and_update_user_context_impl(user_id, session_id)
+
+
 @mcp.tool()
 async def generate_resources(classroom_id: str) -> Dict[str, Any]:
     """
@@ -824,6 +978,10 @@ def main():
         print("   ✅ search_similar_chunks - Buscar chunks similares en classroom")
         print("   ✅ chat_with_classroom_assistant - Chat con asistente del aula")
         print("   ✅ get_classroom_info - Información del classroom")
+        print("   ✅ analyze_and_update_user_context - Analizar conversación y actualizar contexto de usuario")
+        print("   ✅ create_embedding - Crear embedding y almacenar en chunks")
+        print("   ✅ professor_assistant - Asistente de profesor")
+        print("   ✅ generate_resources - Generar recursos de aprendizaje")
         print("🎯 Servidor MCP listo para recibir peticiones...")
         
         # Ejecutar el servidor FastMCP

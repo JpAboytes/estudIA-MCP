@@ -537,6 +537,123 @@ Criterios de evaluación:
                 },
                 'recommendations': []
             }
+    
+    async def analyze_conversation_for_context_update(
+        self,
+        current_context: str,
+        conversation_messages: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Analiza la conversación del usuario y determina si el contexto debe actualizarse.
+        
+        Args:
+            current_context: Contexto actual del usuario (puede ser texto o JSON string)
+            conversation_messages: Lista de mensajes de la conversación con 'content', 'created_at', 'user_id'
+            
+        Returns:
+            Dict con should_update (bool), new_context (str), y reasons (list)
+        """
+        try:
+            # Construir el historial de conversación
+            conversation_text = ""
+            for msg in conversation_messages:
+                # Determinar si es del usuario o del asistente (si user_id es None, es del asistente)
+                sender = "Usuario" if msg.get('user_id') else "Asistente"
+                content = msg.get('content', '')
+                timestamp = msg.get('created_at', '')
+                conversation_text += f"\n[{timestamp}] {sender}: {content}"
+            
+            prompt = f"""Eres un asistente educativo que analiza conversaciones para personalizar la experiencia del usuario.
+
+**CONTEXTO ACTUAL DEL USUARIO:**
+{current_context if current_context else "No hay contexto previo"}
+
+**CONVERSACIÓN COMPLETA:**
+{conversation_text}
+
+**INSTRUCCIONES:**
+Analiza la conversación y determina si hay información valiosa para actualizar el contexto del usuario.
+
+Busca información sobre:
+1. **Nivel educativo**: Grado, carrera, área de estudio
+2. **Estilo de aprendizaje**: Visual, auditivo, kinestésico, preferencias de explicación
+3. **Intereses académicos**: Temas que le interesan, áreas de especialización
+4. **Fortalezas y debilidades**: Materias en las que es fuerte o necesita ayuda
+5. **Objetivos educativos**: Metas de aprendizaje, proyectos, exámenes
+6. **Preferencias de comunicación**: Cómo prefiere que le expliquen, nivel de detalle
+7. **Horarios o hábitos**: Cuándo estudia, con qué frecuencia
+8. **Contexto personal relevante**: Cualquier dato que ayude a personalizar el aprendizaje
+
+**RESPONDE EN JSON CON ESTE FORMATO:**
+{{
+  "should_update": true/false,
+  "new_context": "Contexto actualizado en formato de texto descriptivo. Combina el contexto anterior con la nueva información encontrada.",
+  "reasons": [
+    "Razón 1 por la que se debe actualizar",
+    "Razón 2..."
+  ],
+  "key_findings": {{
+    "nivel_educativo": "...",
+    "estilo_aprendizaje": "...",
+    "intereses": ["tema1", "tema2"],
+    "fortalezas": ["..."],
+    "debilidades": ["..."],
+    "objetivos": "...",
+    "preferencias": "...",
+    "otros": "..."
+  }}
+}}
+
+**CRITERIOS PARA ACTUALIZAR:**
+- Si encuentras información nueva y relevante que no está en el contexto actual
+- Si hay cambios en el nivel educativo, intereses o objetivos
+- Si identificas patrones de aprendizaje o preferencias claras
+- Si hay información contradictoria que necesita corrección
+
+**NO ACTUALICES SI:**
+- La conversación es muy breve o superficial
+- No hay información personal o educativa relevante
+- La información ya está en el contexto actual
+
+Responde SOLO con el JSON:"""
+
+            response = await asyncio.to_thread(
+                self.model.generate_content,
+                prompt
+            )
+            
+            text = response.text.strip()
+            
+            # Extraer JSON de la respuesta
+            import json
+            import re
+            
+            # Limpiar markdown si existe
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                result = json.loads(json_match.group(0))
+                return result
+            
+            raise ValueError("No se pudo parsear la respuesta de análisis de contexto")
+            
+        except Exception as error:
+            print(f"Error analizando conversación para actualizar contexto: {error}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'should_update': False,
+                'new_context': current_context,
+                'reasons': [f"Error en el análisis: {str(error)}"],
+                'key_findings': {}
+            }
 
 
 # Instancia global del cliente

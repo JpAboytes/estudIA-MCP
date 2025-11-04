@@ -20,6 +20,7 @@ El núcleo está implementado con `fastmcp` (instancia `mcp` en `src/main.py`) y
 - Análisis de riesgo fiscal y generación de roadmap de formalización.
 - Predicción de crecimiento del negocio con un modelo entrenado (en `src/modelDemo`).
 - **NUEVO:** Herramientas de embeddings y almacenamiento (`generate_embedding`, `store_document`, `search_similar_documents`) - Ver [NUEVAS_HERRAMIENTAS.md](./NUEVAS_HERRAMIENTAS.md)
+- **NUEVO:** Análisis inteligente de conversaciones para actualizar contexto de usuario automáticamente (`analyze_and_update_user_context`) - Ver [CONTEXT_UPDATE_TOOL.md](./CONTEXT_UPDATE_TOOL.md)
 
 ## Estructura del repositorio (resumen)
 
