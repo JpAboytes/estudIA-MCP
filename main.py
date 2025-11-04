@@ -26,7 +26,6 @@ def initialize_clients():
     
     if supabase_url and supabase_key:
         supabase_client = create_client(supabase_url, supabase_key)
-        print("✓ Supabase client initialized")
     else:
         print("⚠ Warning: SUPABASE_URL or SUPABASE_KEY not found in environment")
     
