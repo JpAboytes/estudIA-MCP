@@ -7,9 +7,15 @@ import google.generativeai as genai
 from supabase import create_client, Client
 
 # Cargar variables de entorno
-print("🔧 Cargando variables de entorno desde .env...")
-load_dotenv()
-print("✅ Variables de entorno cargadas")
+# Nota: FastMCP ya maneja las variables de entorno del sistema automáticamente
+# Solo cargamos .env para desarrollo local cuando se ejecuta directamente con Python
+if __name__ == "__main__":
+    print("🔧 Cargando variables de entorno desde .env (modo desarrollo)...")
+    from pathlib import Path
+    script_dir = Path(__file__).parent.absolute()
+    env_path = script_dir / ".env"
+    load_dotenv(dotenv_path=env_path, override=False)
+    print("✅ Variables de entorno cargadas")
 
 # Inicializar FastMCP
 print("🚀 Inicializando FastMCP server 'estudIA-MCP'...")

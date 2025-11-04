@@ -37,9 +37,14 @@ pip install -e .
 ```
 
 4. **Configurar variables de entorno**
+
+**⚠️ IMPORTANTE**: Hay dos formas diferentes de configurar las variables según cómo ejecutes el servidor:
+
+### 🏠 Para desarrollo local (Python directo):
 ```bash
 # Copiar el archivo de ejemplo
-copy .env.example .env
+copy .env.example .env  # Windows
+cp .env.example .env    # Linux/Mac
 ```
 
 Edita `.env` con tus credenciales:
@@ -48,6 +53,11 @@ SUPABASE_URL=https://tu-proyecto.supabase.co
 SUPABASE_KEY=tu_anon_key_aqui
 GEMINI_API_KEY=tu_gemini_api_key
 ```
+
+### 🚀 Para FastMCP / Claude Desktop / MCP Clients:
+Las variables deben estar en el sistema operativo o en la configuración MCP.
+
+**Ver [ENV_CONFIG.md](./ENV_CONFIG.md) para instrucciones detalladas por plataforma.**
 
 5. **Configurar Supabase**
 
