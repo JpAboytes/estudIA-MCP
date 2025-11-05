@@ -31,6 +31,41 @@ class ChatRequest(BaseModel):
 
 # ====== HERRAMIENTAS MCP ======
 
+# ====== FUNCIÓN AUXILIAR PARA generate_embedding ======
+
+async def _generate_embedding_impl(text: str) -> Dict[str, Any]:
+    """
+    Implementación interna para generar embeddings.
+    Esta función es llamada por el tool y también usada internamente.
+    """
+    if not text or not text.strip():
+        return {
+            "success": False,
+            "error": "El texto no puede estar vacío"
+        }
+    
+    try:
+        # Generar embedding usando el cliente existente
+        embedding = await gemini_client.generate_embedding(text)
+        actual_dim = len(embedding)
+        
+        return {
+            "success": True,
+            "embedding": embedding,
+            "dimension": actual_dim,
+            "text_length": len(text),
+            "model": config.GEMINI_EMBED_MODEL,
+            "text_preview": text[:100] + ("..." if len(text) > 100 else "")
+        }
+    
+    except Exception as e:
+        error_details = str(e)
+        return {
+            "success": False,
+            "error": f"Error generando embedding: {error_details}"
+        }
+
+
 @mcp.tool()
 async def generate_embedding(text: str) -> Dict[str, Any]:
     """
@@ -57,34 +92,18 @@ async def generate_embedding(text: str) -> Dict[str, Any]:
             "error": "El texto no puede estar vacío"
         }
     
-    try:
-        print(f"🔄 Generando embedding con Gemini...")
-        print(f"   📐 Modelo: {config.GEMINI_EMBED_MODEL}")
-        print(f"   📊 Dimensiones: {config.EMBED_DIM}")
-        
-        # Generar embedding usando el cliente existente
-        embedding = await gemini_client.generate_embedding(text)
-        actual_dim = len(embedding)
-        
-        print(f"✅ Embedding generado exitosamente ({actual_dim} dims)")
-        
-        return {
-            "success": True,
-            "embedding": embedding,
-            "dimension": actual_dim,
-            "text_length": len(text),
-            "model": config.GEMINI_EMBED_MODEL,
-            "text_preview": text[:100] + ("..." if len(text) > 100 else "")
-        }
+    print(f"🔄 Generando embedding con Gemini...")
+    print(f"   📐 Modelo: {config.GEMINI_EMBED_MODEL}")
+    print(f"   📊 Dimensiones: {config.EMBED_DIM}")
     
-    except Exception as e:
-        error_details = str(e)
-        print(f"❌ ERROR generando embedding: {error_details}")
-        
-        return {
-            "success": False,
-            "error": f"Error generando embedding: {error_details}"
-        }
+    result = await _generate_embedding_impl(text)
+    
+    if result.get("success"):
+        print(f"✅ Embedding generado exitosamente ({result.get('dimension')} dims)")
+    else:
+        print(f"❌ ERROR generando embedding: {result.get('error')}")
+    
+    return result
 
 
 @mcp.tool()
@@ -168,6 +187,64 @@ async def extract_text_from_image(
         }
 
 
+# ====== FUNCIÓN AUXILIAR PARA store_document_chunk ======
+
+async def _store_document_chunk_impl(
+    classroom_document_id: str,
+    chunk_index: int,
+    content: str,
+    token_count: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Implementación interna para almacenar un chunk individual.
+    Esta función es llamada por el tool y también usada internamente.
+    """
+    # Paso 1: Generar embedding del chunk
+    embedding_result = await _generate_embedding_impl(content)
+    
+    if not embedding_result.get("success"):
+        return embedding_result
+    
+    try:
+        # Paso 2: Preparar datos para insertar
+        data = {
+            "classroom_document_id": classroom_document_id,
+            "chunk_index": chunk_index,
+            "content": content,
+            "embedding": embedding_result["embedding"]
+        }
+        
+        if token_count is not None:
+            data["token"] = token_count
+        
+        # Paso 3: Insertar en Supabase
+        result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("classroom_document_chunks").insert(data).execute()
+        )
+        
+        if not result.data:
+            raise Exception("No se recibieron datos de Supabase después de insertar")
+        
+        chunk_id = result.data[0]['id']
+        
+        return {
+            "success": True,
+            "message": "Chunk almacenado exitosamente",
+            "chunk_id": chunk_id,
+            "classroom_document_id": classroom_document_id,
+            "chunk_index": chunk_index,
+            "embedding_dimension": embedding_result["dimension"],
+            "content_length": len(content)
+        }
+    
+    except Exception as e:
+        error_details = str(e)
+        return {
+            "success": False,
+            "error": f"Error almacenando chunk: {error_details}"
+        }
+
+
 @mcp.tool()
 async def store_document_chunk(
     classroom_document_id: str,
@@ -201,98 +278,60 @@ async def store_document_chunk(
     
     # Paso 1: Generar embedding del chunk
     print("   🔄 PASO 1: Generando embedding del chunk...")
-    embedding_result = await generate_embedding(content)
+    result = await _store_document_chunk_impl(
+        classroom_document_id=classroom_document_id,
+        chunk_index=chunk_index,
+        content=content,
+        token_count=token_count
+    )
     
-    if not embedding_result.get("success"):
-        print(f"   ❌ Fallo al generar embedding")
-        return embedding_result
-    
-    print(f"   ✅ Embedding generado ({embedding_result.get('dimension')} dims)")
-    
-    try:
-        # Paso 2: Preparar datos para insertar
-        print("   🔄 PASO 2: Preparando datos para Supabase...")
-        data = {
-            "classroom_document_id": classroom_document_id,
-            "chunk_index": chunk_index,
-            "content": content,
-            "embedding": embedding_result["embedding"]
-        }
-        
-        if token_count is not None:
-            data["token"] = token_count
-        
-        # Paso 3: Insertar en Supabase
-        print(f"   💾 PASO 3: Insertando en tabla 'classroom_document_chunks'...")
-        
-        result = await asyncio.to_thread(
-            lambda: supabase_client.client.table("classroom_document_chunks").insert(data).execute()
-        )
-        
-        print(f"   ✅ INSERT ejecutado exitosamente")
-        
-        if not result.data:
-            raise Exception("No se recibieron datos de Supabase después de insertar")
-        
-        chunk_id = result.data[0]['id']
-        
+    if result.get("success"):
+        print(f"   ✅ Embedding generado ({result.get('embedding_dimension')} dims)")
+        print(f"   💾 INSERT ejecutado exitosamente")
         print(f"✅ Chunk almacenado exitosamente")
-        print(f"   🆔 Chunk ID: {chunk_id}")
+        print(f"   🆔 Chunk ID: {result.get('chunk_id')}")
         print(f"   📄 Document ID: {classroom_document_id}")
         print(f"   #️⃣  Index: {chunk_index}")
         print(f"{'='*60}\n")
-        
-        return {
-            "success": True,
-            "message": "Chunk almacenado exitosamente",
-            "chunk_id": chunk_id,
-            "classroom_document_id": classroom_document_id,
-            "chunk_index": chunk_index,
-            "embedding_dimension": embedding_result["dimension"],
-            "content_length": len(content)
-        }
+    else:
+        print(f"   ❌ Fallo al almacenar chunk: {result.get('error')}")
+        print(f"{'='*60}\n")
     
-    except Exception as e:
-        error_details = str(e)
-        print(f"\n❌ ERROR almacenando chunk: {error_details}")
-        
-        return {
-            "success": False,
-            "error": f"Error almacenando chunk: {error_details}"
-        }
+    return result
 
 
-@mcp.tool()
-async def process_and_store_document(
+# ====== FUNCIÓN AUXILIAR PARA IMPLEMENTACIÓN ======
+
+async def _store_document_chunks_impl(
     classroom_document_id: str,
-    auto_chunk: bool = True,
-    chunk_size: int = 1000
+    chunk_size: int = 1000,
+    chunk_overlap: int = 100
 ) -> Dict[str, Any]:
     """
-    Procesa un documento (texto o imagen) y lo almacena en chunks automáticamente.
+    Implementación interna para procesar y almacenar chunks de un documento.
     
-    Esta función es INTELIGENTE:
-    - Si el documento es una IMAGEN → Aplica OCR para extraer texto
-    - Si es TEXTO → Lo procesa directamente
-    - Divide automáticamente en chunks
-    - Genera embeddings para cada chunk
-    - Almacena todo en la base de datos
+    Esta función:
+    1. Lee el documento de Supabase Storage
+    2. Extrae el contenido (con OCR si es imagen)
+    3. Divide en chunks con overlap
+    4. Genera embeddings para cada chunk
+    5. Almacena los chunks en la base de datos
     
     Args:
         classroom_document_id: UUID del documento en classroom_documents
-        auto_chunk: Si es True, divide automáticamente en chunks (default: True)
         chunk_size: Tamaño de cada chunk en caracteres (default: 1000)
+        chunk_overlap: Overlap entre chunks en caracteres (default: 100)
         
     Returns:
         Dict con el resultado del procesamiento y chunks creados
     """
     print(f"\n{'='*60}")
-    print("🎯 TOOL: process_and_store_document")
+    print("📦 IMPL: _store_document_chunks_impl")
     print(f"{'='*60}")
     print(f"📥 Parámetros:")
     print(f"   - classroom_document_id: {classroom_document_id}")
-    print(f"   - auto_chunk: {auto_chunk}")
     print(f"   - chunk_size: {chunk_size}")
+    print(f"   - chunk_overlap: {chunk_overlap}")
     
     try:
         # Paso 1: Obtener información del documento desde classroom_documents
@@ -361,36 +400,29 @@ async def process_and_store_document(
         if not content or len(content.strip()) < 10:
             raise Exception("El contenido extraído es demasiado corto o vacío")
         
-        # Paso 3: Dividir en chunks si auto_chunk está activado
+        # Paso 3: Dividir en chunks con overlap
+        print(f"   🔄 PASO 3: Dividiendo en chunks (size={chunk_size}, overlap={chunk_overlap})...")
         chunks = []
-        if auto_chunk:
-            print(f"   🔄 PASO 3: Dividiendo en chunks de {chunk_size} caracteres...")
-            
-            # Dividir en chunks con overlap de 100 caracteres para contexto
-            overlap = min(100, chunk_size // 10)
-            
-            for i in range(0, len(content), chunk_size - overlap):
-                chunk_text = content[i:i + chunk_size]
-                if chunk_text.strip():
-                    chunks.append({
-                        'index': len(chunks),
-                        'content': chunk_text,
-                        'start_pos': i,
-                        'end_pos': min(i + chunk_size, len(content))
-                    })
-            
-            print(f"   ✅ Creados {len(chunks)} chunks")
-        else:
-            # Un solo chunk con todo el contenido
-            chunks = [{'index': 0, 'content': content, 'start_pos': 0, 'end_pos': len(content)}]
-            print(f"   ℹ️  Sin chunking automático - 1 chunk completo")
+        
+        for i in range(0, len(content), chunk_size - chunk_overlap):
+            chunk_text = content[i:i + chunk_size]
+            if chunk_text.strip():
+                chunks.append({
+                    'index': len(chunks),
+                    'content': chunk_text,
+                    'start_pos': i,
+                    'end_pos': min(i + chunk_size, len(content))
+                })
+        
+        print(f"   ✅ Creados {len(chunks)} chunks")
         
         # Paso 4: Almacenar cada chunk
         print(f"   🔄 PASO 4: Almacenando {len(chunks)} chunks...")
         stored_chunks = []
         
         for chunk in chunks:
-            chunk_result = await store_document_chunk(
+            # Usar la implementación interna directamente (sin logs del tool)
+            chunk_result = await _store_document_chunk_impl(
                 classroom_document_id=classroom_document_id,
                 chunk_index=chunk['index'],
                 content=chunk['content'],
@@ -398,28 +430,29 @@ async def process_and_store_document(
             )
             
             if chunk_result.get("success"):
-                stored_chunks.append(chunk_result)
+                stored_chunks.append({
+                    "chunk_id": chunk_result.get("chunk_id"),
+                    "chunk_index": chunk['index'],
+                    "content_length": len(chunk['content'])
+                })
                 print(f"   ✅ Chunk {chunk['index']} almacenado")
             else:
                 print(f"   ⚠️  Error en chunk {chunk['index']}: {chunk_result.get('error')}")
         
-        print(f"✅ Documento procesado exitosamente")
+        print(f"✅ Proceso completado exitosamente")
         print(f"   📊 Total chunks: {len(stored_chunks)}/{len(chunks)}")
         print(f"   📝 Total caracteres: {len(content)}")
-        print(f"   🖼️  Procesado con OCR: {'Sí' if is_image else 'No'}")
         print(f"{'='*60}\n")
         
         return {
             "success": True,
             "message": "Documento procesado y almacenado exitosamente",
             "document_id": classroom_document_id,
-            "is_image": is_image,
-            "ocr_applied": is_image,
+            "document_length": len(content),
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
             "total_chunks": len(stored_chunks),
-            "total_characters": len(content),
-            "chunk_size_used": chunk_size,
-            "chunks": stored_chunks,
-            "content_preview": content[:300] + ("..." if len(content) > 300 else "")
+            "chunks": stored_chunks
         }
         
     except Exception as e:
@@ -430,6 +463,84 @@ async def process_and_store_document(
             "success": False,
             "error": f"Error procesando documento: {error_details}"
         }
+
+
+# ====== TOOL: store_document_chunks (versión automática) ======
+
+@mcp.tool()
+async def store_document_chunks(
+    classroom_document_id: str,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 100
+) -> Dict[str, Any]:
+    """
+    Procesa y almacena chunks de un documento AUTOMÁTICAMENTE.
+    
+    Esta es la versión SIMPLIFICADA - solo pasa el ID del documento y listo!
+    
+    La función hace TODO por ti:
+    - Lee el documento de Storage (texto o imagen)
+    - Aplica OCR si es imagen
+    - Divide en chunks con overlap
+    - Genera embeddings
+    - Almacena en la base de datos
+    
+    Args:
+        classroom_document_id: UUID del documento en classroom_documents
+        chunk_size: Tamaño de cada chunk en caracteres (default: 1000)
+        chunk_overlap: Overlap entre chunks en caracteres (default: 100)
+        
+    Returns:
+        Dict con el resultado del procesamiento y chunks creados
+    """
+    return await _store_document_chunks_impl(
+        classroom_document_id=classroom_document_id,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+
+
+# ====== TOOL: process_and_store_document (versión legacy) ======
+
+@mcp.tool()
+async def process_and_store_document(
+    classroom_document_id: str,
+    auto_chunk: bool = True,
+    chunk_size: int = 1000
+) -> Dict[str, Any]:
+    """
+    Procesa un documento (texto o imagen) y lo almacena en chunks automáticamente.
+    
+    NOTA: Esta es la versión legacy. Usa 'store_document_chunks' para la versión simplificada.
+    
+    Esta función es INTELIGENTE:
+    - Si el documento es una IMAGEN → Aplica OCR para extraer texto
+    - Si es TEXTO → Lo procesa directamente
+    - Divide automáticamente en chunks
+    - Genera embeddings para cada chunk
+    - Almacena todo en la base de datos
+    
+    Args:
+        classroom_document_id: UUID del documento en classroom_documents
+        auto_chunk: Si es True, divide automáticamente en chunks (default: True)
+        chunk_size: Tamaño de cada chunk en caracteres (default: 1000)
+        
+    Returns:
+        Dict con el resultado del procesamiento y chunks creados
+    """
+    print(f"\n🔄 Redirigiendo a implementación automática...")
+    
+    if not auto_chunk:
+        # Si no quiere chunking automático, usar chunk_size muy grande
+        chunk_size = 1000000
+    
+    # Usar la implementación interna
+    overlap = min(100, chunk_size // 10)
+    return await _store_document_chunks_impl(
+        classroom_document_id=classroom_document_id,
+        chunk_size=chunk_size,
+        chunk_overlap=overlap
+    )
 
 
 @mcp.tool()
