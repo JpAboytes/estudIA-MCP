@@ -1401,6 +1401,247 @@ async def generate_resources(
     )
 
 
+@mcp.tool()
+async def generate_flashcards(
+    classroom_id: str,
+    max_flashcards: int = 20,
+    difficulty_level: str = "mixed"
+) -> Dict[str, Any]:
+    """
+    Genera flashcards educativas a partir de documentos del classroom.
+    
+    Analiza el contenido de los documentos y crea tarjetas de estudio con
+    preguntas y respuestas, conceptos clave, términos y definiciones.
+    
+    Args:
+        classroom_id: UUID del classroom
+        max_flashcards: Número máximo de flashcards a generar (default: 20)
+        difficulty_level: Nivel de dificultad ('easy', 'medium', 'hard', 'mixed') (default: 'mixed')
+        
+    Returns:
+        Dict con las flashcards generadas en formato JSON
+    """
+    print(f"\n{'='*70}")
+    print("🎯 TOOL: generate_flashcards")
+    print(f"{'='*70}")
+    print(f"📥 Parámetros:")
+    print(f"   - Classroom ID: {classroom_id}")
+    print(f"   - Max Flashcards: {max_flashcards}")
+    print(f"   - Difficulty Level: {difficulty_level}")
+    
+    try:
+        # PASO 1: Validar nivel de dificultad
+        valid_levels = ['easy', 'medium', 'hard', 'mixed']
+        if difficulty_level not in valid_levels:
+            return {
+                "success": False,
+                "error": f"Nivel de dificultad inválido. Use: {', '.join(valid_levels)}"
+            }
+        
+        # PASO 2: Obtener documentos del classroom
+        print(f"\n📚 PASO 1: Obteniendo documentos del classroom...")
+        
+        docs_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("classroom_documents")
+            .select("id, title, original_filename, storage_path")
+            .eq("classroom_id", classroom_id)
+            .execute()
+        )
+        
+        documents = docs_result.data if docs_result.data else []
+        print(f"✅ Encontrados {len(documents)} documentos")
+        
+        if not documents:
+            return {
+                "success": False,
+                "error": "No hay documentos disponibles en el classroom"
+            }
+        
+        # PASO 3: Obtener chunks de los documentos
+        print(f"\n📄 PASO 2: Obteniendo contenido de los documentos...")
+        
+        doc_ids = [doc['id'] for doc in documents]
+        chunks_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("classroom_document_chunks")
+            .select("content, chunk_index, classroom_document_id")
+            .in_("classroom_document_id", doc_ids)
+            .order("classroom_document_id")
+            .order("chunk_index")
+            .limit(50)  # Limitar para no sobrecargar
+            .execute()
+        )
+        
+        chunks = chunks_result.data if chunks_result.data else []
+        print(f"✅ Encontrados {len(chunks)} chunks")
+        
+        if not chunks:
+            return {
+                "success": False,
+                "error": "No hay contenido disponible en los documentos"
+            }
+        
+        # PASO 4: Preparar contenido para Gemini
+        print(f"\n📝 PASO 3: Preparando contenido...")
+        
+        full_content = "\n\n".join([
+            chunk.get('content', '') for chunk in chunks[:30]  # Máximo 30 chunks
+        ])
+        
+        print(f"✅ Contenido preparado ({len(full_content)} caracteres)")
+        
+        # PASO 5: Generar flashcards con Gemini
+        print(f"\n🤖 PASO 4: Generando flashcards con Gemini...")
+        
+        difficulty_instruction = {
+            'easy': "Crea preguntas básicas y conceptos fundamentales. Las respuestas deben ser cortas y directas.",
+            'medium': "Crea preguntas que requieran comprensión moderada. Las respuestas deben explicar con cierto detalle.",
+            'hard': "Crea preguntas desafiantes que requieran análisis profundo. Las respuestas deben ser completas y detalladas.",
+            'mixed': "Mezcla diferentes niveles de dificultad (fácil, medio y difícil) para un aprendizaje balanceado."
+        }
+        
+        prompt = f"""Eres un asistente pedagógico experto en crear material de estudio efectivo.
+
+**Contenido del aula:**
+{full_content}
+
+**INSTRUCCIONES:**
+Genera exactamente {max_flashcards} flashcards educativas basadas en el contenido anterior.
+
+{difficulty_instruction[difficulty_level]}
+
+Genera las flashcards en formato JSON con esta estructura:
+
+{{
+  "flashcards": [
+    {{
+      "id": 1,
+      "type": "concept",
+      "difficulty": "easy|medium|hard",
+      "front": "Pregunta o concepto clave",
+      "back": "Respuesta o definición completa",
+      "category": "Categoría del tema (ej: Matemáticas, Historia, etc.)",
+      "tags": ["tag1", "tag2"]
+    }}
+  ],
+  "metadata": {{
+    "total_flashcards": {max_flashcards},
+    "difficulty_distribution": {{
+      "easy": 0,
+      "medium": 0,
+      "hard": 0
+    }},
+    "categories": ["categoria1", "categoria2"]
+  }}
+}}
+
+**TIPOS DE FLASHCARDS que puedes crear:**
+- "concept": Pregunta-Respuesta sobre conceptos
+- "definition": Término-Definición
+- "example": Caso-Explicación
+- "comparison": Diferencia entre A y B
+- "application": Problema-Solución
+
+**REGLAS:**
+1. Las preguntas deben ser claras y concisas
+2. Las respuestas deben ser completas pero no excesivamente largas
+3. Usa el contenido real del aula
+4. Varía los tipos de flashcards
+5. Asegúrate de cubrir los temas principales
+6. Las flashcards deben ser útiles para estudiar
+
+Responde SOLO con JSON válido:"""
+        
+        response = await gemini_client.generate_text(prompt)
+        
+        # PASO 6: Parsear JSON
+        print(f"\n📋 PASO 5: Parseando flashcards generadas...")
+        
+        try:
+            json_str = response.strip()
+            if json_str.startswith("```json"):
+                json_str = json_str[7:]
+            if json_str.startswith("```"):
+                json_str = json_str[3:]
+            if json_str.endswith("```"):
+                json_str = json_str[:-3]
+            
+            flashcards_data = json.loads(json_str.strip())
+            
+            # Validar estructura
+            if 'flashcards' not in flashcards_data:
+                raise ValueError("El JSON no contiene el campo 'flashcards'")
+            
+            flashcards = flashcards_data.get('flashcards', [])
+            metadata = flashcards_data.get('metadata', {})
+            
+            print(f"✅ {len(flashcards)} flashcards parseadas correctamente")
+            
+            # Calcular estadísticas
+            difficulty_count = {'easy': 0, 'medium': 0, 'hard': 0}
+            categories = set()
+            types = {}
+            
+            for fc in flashcards:
+                diff = fc.get('difficulty', 'medium')
+                if diff in difficulty_count:
+                    difficulty_count[diff] += 1
+                
+                cat = fc.get('category', 'General')
+                categories.add(cat)
+                
+                fc_type = fc.get('type', 'concept')
+                types[fc_type] = types.get(fc_type, 0) + 1
+            
+            print(f"   📊 Distribución por dificultad:")
+            print(f"      - Fácil: {difficulty_count['easy']}")
+            print(f"      - Medio: {difficulty_count['medium']}")
+            print(f"      - Difícil: {difficulty_count['hard']}")
+            print(f"   📂 Categorías: {', '.join(categories)}")
+            print(f"   🏷️  Tipos: {', '.join([f'{k}({v})' for k, v in types.items()])}")
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"⚠️  Error parseando JSON: {e}")
+            print(f"   Usando formato simple...")
+            
+            # Fallback: crear estructura básica
+            flashcards = []
+            flashcards_data = {
+                "flashcards": flashcards,
+                "metadata": {
+                    "total_flashcards": 0,
+                    "difficulty_distribution": {"easy": 0, "medium": 0, "hard": 0},
+                    "categories": []
+                }
+            }
+        
+        print(f"{'='*70}\n")
+        
+        return {
+            "success": True,
+            "message": f"{len(flashcards)} flashcards generadas exitosamente",
+            "flashcards": flashcards,
+            "metadata": {
+                "total_flashcards": len(flashcards),
+                "difficulty_distribution": difficulty_count,
+                "categories": list(categories),
+                "types": types,
+                "classroom_id": classroom_id,
+                "source_documents": len(documents),
+                "content_chunks_analyzed": len(chunks)
+            }
+        }
+        
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR: {error_details}")
+        print(f"{'='*70}\n")
+        
+        return {
+            "success": False,
+            "error": f"Error generando flashcards: {error_details}"
+        }
+
+
 
 # ====== FUNCIÓN PRINCIPAL ======
 
