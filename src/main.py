@@ -415,7 +415,7 @@ async def _store_document_chunks_impl(
 # ====== TOOL: store_document_chunks (versión automática) ======
 
 @mcp.tool()
-async def store_document_chunk(
+async def store_document_chunks(
     classroom_document_id: str,
     chunk_size: int = 1000,
     chunk_overlap: int = 100
