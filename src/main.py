@@ -772,8 +772,45 @@ async def _generate_resources_impl(
         chunks = chunks_result.data if chunks_result.data else []
         print(f"✅ Encontrados {len(chunks)} chunks")
         
-        # PASO 3: Preparar contenido para Gemini
-        print(f"\n📝 PASO 3: Preparando contenido...")
+        # PASO 3: Obtener contexto del usuario para personalización
+        print(f"\n👤 PASO 3: Obteniendo contexto del usuario...")
+        user_context_info = ""
+        user_name = "Estudiante"
+        
+        try:
+            user_result = await asyncio.to_thread(
+                lambda: supabase_client.client.table("users")
+                .select("user_context, name")
+                .eq("id", user_id)
+                .single()
+                .execute()
+            )
+            
+            if user_result.data:
+                user_context = user_result.data.get('user_context', '')
+                user_name = user_result.data.get('name', 'Estudiante')
+                
+                if user_context:
+                    user_context_info = f"""
+**CONTEXTO DEL ESTUDIANTE ({user_name}):**
+{user_context}
+
+IMPORTANTE: Personaliza el recurso según este contexto:
+- Ajusta el nivel de complejidad según su nivel educativo
+- Considera su estilo de aprendizaje preferido (visual, práctico, teórico, etc.)
+- Ten en cuenta sus fortalezas y áreas de mejora
+- Usa vocabulario y ejemplos apropiados para su nivel
+- Si prefiere aprendizaje visual, enfatiza diagramas y estructuras visuales
+- Si prefiere código/práctica, incluye ejemplos prácticos y aplicaciones
+"""
+                    print(f"   ✅ Contexto del usuario obtenido ({len(user_context)} caracteres)")
+                else:
+                    print(f"   ℹ️  Usuario sin contexto personalizado")
+        except Exception as e:
+            print(f"   ⚠️  No se pudo obtener contexto del usuario: {e}")
+        
+        # PASO 4: Preparar contenido para Gemini
+        print(f"\n📝 PASO 4: Preparando contenido...")
         
         full_content = "\n\n".join([
             chunk.get('content', '') for chunk in chunks[:30]
@@ -781,12 +818,19 @@ async def _generate_resources_impl(
         
         print(f"✅ Contenido preparado ({len(full_content)} caracteres)")
         
-        # PASO 4: Generar estructura con Gemini
-        print(f"\n🤖 PASO 4: Generando estructura del recurso con Gemini...")
+        # PASO 5: Generar estructura con Gemini (PERSONALIZADA)
+        print(f"\n🤖 PASO 5: Generando estructura personalizada del recurso con Gemini...")
         
         topic_text = f" sobre '{topic}'" if topic else ""
         
         prompt = f"""Eres un asistente pedagógico experto. Genera un recurso educativo{topic_text} basado en el siguiente contenido.
+
+{user_context_info}
+
+**Contenido de los documentos:**
+{full_content}
+
+ADAPTA el contenido del recurso según el contexto del estudiante si está disponible.
 
 **Contenido de los documentos:**
 {full_content}
@@ -827,7 +871,7 @@ Responde SOLO con JSON válido:"""
                 json_str = json_str[:-3]
             
             structure = json.loads(json_str.strip())
-            print(f"✅ Estructura generada: {len(structure.get('sections', []))} secciones")
+            print(f"✅ Estructura personalizada generada: {len(structure.get('sections', []))} secciones")
             
         except json.JSONDecodeError as e:
             return {
@@ -835,8 +879,8 @@ Responde SOLO con JSON válido:"""
                 "error": f"Error parseando estructura: {str(e)}"
             }
         
-        # PASO 5: Generar archivo según el tipo
-        print(f"\n📄 PASO 5: Generando archivo {resource_type.upper()}...")
+        # PASO 6: Generar archivo según el tipo
+        print(f"\n📄 PASO 6: Generando archivo {resource_type.upper()}...")
         
         file_buffer = io.BytesIO()
         
@@ -969,8 +1013,8 @@ Responde SOLO con JSON válido:"""
         
         print(f"✅ Archivo generado: {file_size} bytes")
         
-        # PASO 6: Subir a Supabase Storage
-        print(f"\n☁️  PASO 6: Subiendo archivo a Supabase Storage...")
+        # PASO 7: Subir a Supabase Storage
+        print(f"\n☁️  PASO 7: Subiendo archivo a Supabase Storage...")
         
         resource_id = str(uuid.uuid4())
         file_extension = 'pdf' if resource_type == 'pdf' else 'pptx'
@@ -994,8 +1038,8 @@ Responde SOLO con JSON válido:"""
         
         print(f"✅ Archivo subido: {storage_path}")
         
-        # PASO 7: Guardar metadata en la base de datos
-        print(f"\n💾 PASO 7: Guardando metadata en la base de datos...")
+        # PASO 8: Guardar metadata en la base de datos
+        print(f"\n💾 PASO 8: Guardando metadata en la base de datos...")
         
         resource_data = {
             "id": resource_id,
@@ -1024,16 +1068,22 @@ Responde SOLO con JSON válido:"""
         # Obtener URL pública
         public_url = supabase_client.client.storage.from_(bucket_name).get_public_url(storage_path)
         
+        personalized = bool(user_context_info)
+        if personalized:
+            print(f"✨ Recurso personalizado para: {user_name}")
+        
         print(f"{'='*70}\n")
         
         return {
             "success": True,
-            "message": f"Recurso {resource_type.upper()} generado exitosamente",
+            "message": f"Recurso {resource_type.upper()} {'personalizado' if personalized else 'generado'} exitosamente",
             "resource_id": resource_id,
             "resource_type": resource_type,
             "title": structure.get('title'),
             "storage_path": storage_path,
             "bucket": bucket_name,
+            "personalized": personalized,
+            "user_name": user_name,
             "file_size_bytes": file_size,
             "public_url": public_url,
             "sections_count": len(structure.get('sections', [])),
