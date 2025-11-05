@@ -106,13 +106,15 @@ async def generate_embedding(text: str) -> Dict[str, Any]:
     return result
 
 
-@mcp.tool()
-async def extract_text_from_image(
+# ====== FUNCIÓN AUXILIAR PARA extract_text_from_image ======
+
+async def _extract_text_from_image_impl(
     storage_path: str,
     bucket_name: str = "uploads"
 ) -> Dict[str, Any]:
     """
-    Extrae texto de una imagen usando OCR de Gemini Vision.
+    Implementación interna para extraer texto de una imagen usando OCR de Gemini Vision.
+    Esta función es llamada internamente y NO es un tool MCP expuesto.
     
     Soporta fotos de apuntes, documentos escaneados, capturas de pantalla, etc.
     Útil para procesar contenido educativo que está en formato de imagen.
@@ -125,7 +127,7 @@ async def extract_text_from_image(
         Dict con el texto extraído y metadata
     """
     print(f"\n{'='*60}")
-    print("🎯 TOOL: extract_text_from_image")
+    print("🔧 INTERNAL: _extract_text_from_image_impl")
     print(f"{'='*60}")
     print(f"📥 Parámetros:")
     print(f"   - storage_path: {storage_path}")
@@ -245,61 +247,6 @@ async def _store_document_chunk_impl(
         }
 
 
-@mcp.tool()
-async def store_document_chunk(
-    classroom_document_id: str,
-    chunk_index: int,
-    content: str,
-    token_count: Optional[int] = None
-) -> Dict[str, Any]:
-    """
-    Almacena un chunk/fragmento de documento con su embedding en classroom_document_chunks.
-    
-    Esta función debe usarse después de subir un documento a classroom_documents.
-    El documento se divide en chunks para búsqueda semántica eficiente.
-    
-    Args:
-        classroom_document_id: UUID del documento en classroom_documents
-        chunk_index: Índice del chunk (0, 1, 2, ...)
-        content: Contenido de texto del chunk
-        token_count: Número de tokens del chunk (opcional)
-        
-    Returns:
-        Dict con el resultado de la operación y el ID del chunk creado
-    """
-    print(f"\n{'='*60}")
-    print("🎯 TOOL: store_document_chunk")
-    print(f"{'='*60}")
-    print(f"📥 Parámetros:")
-    print(f"   - classroom_document_id: {classroom_document_id}")
-    print(f"   - chunk_index: {chunk_index}")
-    print(f"   - content length: {len(content)} caracteres")
-    print(f"   - token_count: {token_count or 'auto'}")
-    
-    # Paso 1: Generar embedding del chunk
-    print("   🔄 PASO 1: Generando embedding del chunk...")
-    result = await _store_document_chunk_impl(
-        classroom_document_id=classroom_document_id,
-        chunk_index=chunk_index,
-        content=content,
-        token_count=token_count
-    )
-    
-    if result.get("success"):
-        print(f"   ✅ Embedding generado ({result.get('embedding_dimension')} dims)")
-        print(f"   💾 INSERT ejecutado exitosamente")
-        print(f"✅ Chunk almacenado exitosamente")
-        print(f"   🆔 Chunk ID: {result.get('chunk_id')}")
-        print(f"   📄 Document ID: {classroom_document_id}")
-        print(f"   #️⃣  Index: {chunk_index}")
-        print(f"{'='*60}\n")
-    else:
-        print(f"   ❌ Fallo al almacenar chunk: {result.get('error')}")
-        print(f"{'='*60}\n")
-    
-    return result
-
-
 # ====== FUNCIÓN AUXILIAR PARA IMPLEMENTACIÓN ======
 
 async def _store_document_chunks_impl(
@@ -369,7 +316,7 @@ async def _store_document_chunks_impl(
         if is_image:
             # Paso 2a: Procesar imagen con OCR
             print(f"   🖼️  Detectada IMAGEN - Aplicando OCR...")
-            ocr_result = await extract_text_from_image(storage_path, bucket)
+            ocr_result = await _extract_text_from_image_impl(storage_path, bucket)
             
             if not ocr_result.get("success"):
                 raise Exception(f"Error en OCR: {ocr_result.get('error')}")
@@ -468,7 +415,7 @@ async def _store_document_chunks_impl(
 # ====== TOOL: store_document_chunks (versión automática) ======
 
 @mcp.tool()
-async def store_document_chunks(
+async def store_document_chunk(
     classroom_document_id: str,
     chunk_size: int = 1000,
     chunk_overlap: int = 100
@@ -497,49 +444,6 @@ async def store_document_chunks(
         classroom_document_id=classroom_document_id,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap
-    )
-
-
-# ====== TOOL: process_and_store_document (versión legacy) ======
-
-@mcp.tool()
-async def process_and_store_document(
-    classroom_document_id: str,
-    auto_chunk: bool = True,
-    chunk_size: int = 1000
-) -> Dict[str, Any]:
-    """
-    Procesa un documento (texto o imagen) y lo almacena en chunks automáticamente.
-    
-    NOTA: Esta es la versión legacy. Usa 'store_document_chunks' para la versión simplificada.
-    
-    Esta función es INTELIGENTE:
-    - Si el documento es una IMAGEN → Aplica OCR para extraer texto
-    - Si es TEXTO → Lo procesa directamente
-    - Divide automáticamente en chunks
-    - Genera embeddings para cada chunk
-    - Almacena todo en la base de datos
-    
-    Args:
-        classroom_document_id: UUID del documento en classroom_documents
-        auto_chunk: Si es True, divide automáticamente en chunks (default: True)
-        chunk_size: Tamaño de cada chunk en caracteres (default: 1000)
-        
-    Returns:
-        Dict con el resultado del procesamiento y chunks creados
-    """
-    print(f"\n🔄 Redirigiendo a implementación automática...")
-    
-    if not auto_chunk:
-        # Si no quiere chunking automático, usar chunk_size muy grande
-        chunk_size = 1000000
-    
-    # Usar la implementación interna
-    overlap = min(100, chunk_size // 10)
-    return await _store_document_chunks_impl(
-        classroom_document_id=classroom_document_id,
-        chunk_size=chunk_size,
-        chunk_overlap=overlap
     )
 
 
