@@ -21,6 +21,7 @@ El núcleo está implementado con `fastmcp` (instancia `mcp` en `src/main.py`) y
 - Predicción de crecimiento del negocio con un modelo entrenado (en `src/modelDemo`).
 - **NUEVO:** Herramientas de embeddings y almacenamiento (`generate_embedding`, `store_document`, `search_similar_documents`) - Ver [NUEVAS_HERRAMIENTAS.md](./NUEVAS_HERRAMIENTAS.md)
 - **NUEVO:** Análisis inteligente de conversaciones para actualizar contexto de usuario automáticamente (`analyze_and_update_user_context`) - Ver [CONTEXT_UPDATE_TOOL.md](./CONTEXT_UPDATE_TOOL.md)
+- **NUEVO:** Generación de recursos educativos en PDF y PowerPoint (`generate_resources`) basados en documentos del classroom - Ver [GENERATE_RESOURCES_DOCS.md](./GENERATE_RESOURCES_DOCS.md) y [SETUP_GENERATE_RESOURCES.md](./SETUP_GENERATE_RESOURCES.md)
 
 ## Estructura del repositorio (resumen)
 

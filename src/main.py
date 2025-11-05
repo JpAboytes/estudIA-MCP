@@ -967,105 +967,134 @@ async def analyze_and_update_user_context(
     return await _analyze_and_update_user_context_impl(user_id, session_id)
 
 
-@mcp.tool()
-async def generate_resources(classroom_id: str) -> Dict[str, Any]:
+async def _generate_resources_impl(
+    classroom_id: str,
+    resource_type: str,
+    user_id: str,
+    topic: str = None,
+    source_document_ids: list = None
+) -> Dict[str, Any]:
     """
-    Genera recursos de aprendizaje basándose en los documentos del classroom.
-    
-    Analiza todos los documentos de la clase y genera recursos educativos
-    personalizados como resúmenes, conceptos clave, ejercicios sugeridos, etc.
-    
-    Args:
-        classroom_id: UUID del classroom
-        
-    Returns:
-        Dict con los recursos de aprendizaje generados
+    Implementación interna de generate_resources.
+    Genera recursos educativos (PDF o PPT) basándose en documentos del classroom.
     """
+    import io
+    import uuid
+    from datetime import datetime
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, PageBreak
+    from reportlab.lib.units import inch
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    
     print(f"\n{'='*70}")
     print("🎯 TOOL: generate_resources")
     print(f"{'='*70}")
     print(f"📥 Parámetros:")
     print(f"   - Classroom ID: {classroom_id}")
+    print(f"   - Resource Type: {resource_type}")
+    print(f"   - User ID: {user_id}")
+    print(f"   - Topic: {topic or 'General'}")
     
     try:
-        # PASO 1: Obtener chunks del classroom
-        print(f"\n📚 PASO 1: Obteniendo documentos...")
+        # PASO 1: Validar tipo de recurso
+        if resource_type not in ['pdf', 'ppt']:
+            return {
+                "success": False,
+                "error": f"Tipo de recurso inválido: {resource_type}. Use 'pdf' o 'ppt'"
+            }
         
-        result = await asyncio.to_thread(
+        # PASO 2: Obtener documentos del classroom
+        print(f"\n📚 PASO 2: Obteniendo documentos del classroom...")
+        
+        # Si se proporcionaron IDs específicos, usarlos
+        if source_document_ids:
+            docs_result = await asyncio.to_thread(
+                lambda: supabase_client.client.table("classroom_documents")
+                .select("id, title, original_filename, storage_path")
+                .in_("id", source_document_ids)
+                .execute()
+            )
+        else:
+            # Obtener todos los documentos del classroom
+            docs_result = await asyncio.to_thread(
+                lambda: supabase_client.client.table("classroom_documents")
+                .select("id, title, original_filename, storage_path")
+                .eq("classroom_id", classroom_id)
+                .execute()
+            )
+        
+        documents = docs_result.data if docs_result.data else []
+        print(f"✅ Encontrados {len(documents)} documentos")
+        
+        if not documents:
+            return {
+                "success": False,
+                "error": "No hay documentos disponibles en el classroom"
+            }
+        
+        # Obtener chunks de los documentos
+        doc_ids = [doc['id'] for doc in documents]
+        chunks_result = await asyncio.to_thread(
             lambda: supabase_client.client.table("classroom_document_chunks")
-            .select("content, chunk_index")
-            .eq("classroom_document_id", classroom_id)
+            .select("content, chunk_index, classroom_document_id")
+            .in_("classroom_document_id", doc_ids)
+            .order("classroom_document_id")
             .order("chunk_index")
-            .limit(50)
+            .limit(100)
             .execute()
         )
         
-        chunks = result.data if result.data else []
+        chunks = chunks_result.data if chunks_result.data else []
         print(f"✅ Encontrados {len(chunks)} chunks")
         
-        if not chunks:
-            return {
-                "success": True,
-                "message": "No hay documentos disponibles",
-                "resources": {
-                    "summary": "No hay documentos cargados en la clase",
-                    "key_concepts": [],
-                    "study_tips": ["Sube documentos para generar recursos"],
-                    "suggested_exercises": []
-                },
-                "classroom_id": classroom_id
-            }
-        
-        # PASO 2: Preparar contenido
-        print(f"\n📝 PASO 2: Preparando contenido...")
+        # PASO 3: Preparar contenido para Gemini
+        print(f"\n📝 PASO 3: Preparando contenido...")
         
         full_content = "\n\n".join([
-            chunk.get('content', '') for chunk in chunks[:20]
+            chunk.get('content', '') for chunk in chunks[:30]
         ])
         
         print(f"✅ Contenido preparado ({len(full_content)} caracteres)")
         
-        # PASO 3: Generar recursos
-        print(f"\n🤖 PASO 3: Generando recursos...")
+        # PASO 4: Generar estructura con Gemini
+        print(f"\n🤖 PASO 4: Generando estructura del recurso con Gemini...")
         
-        prompt = f"""Eres un asistente pedagógico experto.
+        topic_text = f" sobre '{topic}'" if topic else ""
+        
+        prompt = f"""Eres un asistente pedagógico experto. Genera un recurso educativo{topic_text} basado en el siguiente contenido.
 
-
-
-
-**Contenido de la clase:**
+**Contenido de los documentos:**
 {full_content}
 
-
-
-
-Genera recursos de aprendizaje en formato JSON:
-
-
-
+Genera una estructura en formato JSON con:
 
 {{
-  "summary": "Resumen del contenido (2-3 párrafos)",
+  "title": "Título del recurso",
+  "subtitle": "Subtítulo o descripción breve",
+  "sections": [
+    {{
+      "heading": "Título de la sección",
+      "content": "Contenido detallado de la sección (2-3 párrafos)",
+      "bullet_points": ["Punto clave 1", "Punto clave 2", "Punto clave 3"]
+    }}
+  ],
   "key_concepts": [
-    {{"concept": "Nombre", "definition": "Definición", "importance": "Por qué es importante"}}
+    {{
+      "term": "Término",
+      "definition": "Definición clara y concisa"
+    }}
   ],
-  "study_tips": ["Consejo 1", "Consejo 2"],
-  "suggested_exercises": [
-    {{"exercise": "Descripción", "difficulty": "Fácil/Intermedio/Avanzado", "objective": "Objetivo"}}
-  ],
-  "recommended_readings": ["Tema 1", "Tema 2"]
+  "summary": "Resumen final del recurso (1-2 párrafos)"
 }}
 
-
-
-
-Responde SOLO con JSON:"""
+Responde SOLO con JSON válido:"""
         
         response = await gemini_client.generate_text(prompt)
         
-        print(f"✅ Recursos generados")
-        
-        # PASO 4: Parsear JSON
+        # Parsear JSON
         try:
             json_str = response.strip()
             if json_str.startswith("```json"):
@@ -1075,25 +1104,219 @@ Responde SOLO con JSON:"""
             if json_str.endswith("```"):
                 json_str = json_str[:-3]
             
-            resources = json.loads(json_str.strip())
+            structure = json.loads(json_str.strip())
+            print(f"✅ Estructura generada: {len(structure.get('sections', []))} secciones")
             
-        except json.JSONDecodeError:
-            print(f"⚠️  Usando respuesta en texto")
-            resources = {
-                "summary": response,
-                "key_concepts": [],
-                "study_tips": [],
-                "suggested_exercises": []
+        except json.JSONDecodeError as e:
+            return {
+                "success": False,
+                "error": f"Error parseando estructura: {str(e)}"
             }
+        
+        # PASO 5: Generar archivo según el tipo
+        print(f"\n📄 PASO 5: Generando archivo {resource_type.upper()}...")
+        
+        file_buffer = io.BytesIO()
+        
+        if resource_type == 'pdf':
+            # Generar PDF
+            doc = SimpleDocTemplate(file_buffer, pagesize=letter)
+            story = []
+            styles = getSampleStyleSheet()
+            
+            # Título
+            title_style = styles['Title']
+            story.append(Paragraph(structure.get('title', 'Recurso Educativo'), title_style))
+            story.append(Spacer(1, 0.2*inch))
+            
+            # Subtítulo
+            if structure.get('subtitle'):
+                story.append(Paragraph(structure['subtitle'], styles['Heading2']))
+                story.append(Spacer(1, 0.3*inch))
+            
+            # Secciones
+            for section in structure.get('sections', []):
+                story.append(Paragraph(section.get('heading', 'Sección'), styles['Heading1']))
+                story.append(Spacer(1, 0.1*inch))
+                story.append(Paragraph(section.get('content', ''), styles['BodyText']))
+                story.append(Spacer(1, 0.2*inch))
+                
+                # Bullet points
+                for point in section.get('bullet_points', []):
+                    story.append(Paragraph(f"• {point}", styles['BodyText']))
+                
+                story.append(Spacer(1, 0.3*inch))
+            
+            # Conceptos clave
+            if structure.get('key_concepts'):
+                story.append(PageBreak())
+                story.append(Paragraph("Conceptos Clave", styles['Heading1']))
+                story.append(Spacer(1, 0.2*inch))
+                
+                for concept in structure['key_concepts']:
+                    story.append(Paragraph(f"<b>{concept.get('term', '')}</b>: {concept.get('definition', '')}", styles['BodyText']))
+                    story.append(Spacer(1, 0.1*inch))
+            
+            # Resumen
+            if structure.get('summary'):
+                story.append(PageBreak())
+                story.append(Paragraph("Resumen", styles['Heading1']))
+                story.append(Spacer(1, 0.2*inch))
+                story.append(Paragraph(structure['summary'], styles['BodyText']))
+            
+            doc.build(story)
+            
+        else:  # ppt
+            # Generar PowerPoint
+            prs = Presentation()
+            prs.slide_width = Inches(10)
+            prs.slide_height = Inches(7.5)
+            
+            # Slide 1: Título
+            title_slide_layout = prs.slide_layouts[0]
+            slide = prs.slides.add_slide(title_slide_layout)
+            title = slide.shapes.title
+            subtitle = slide.placeholders[1]
+            
+            title.text = structure.get('title', 'Recurso Educativo')
+            subtitle.text = structure.get('subtitle', '')
+            
+            # Slides para cada sección
+            for section in structure.get('sections', []):
+                slide_layout = prs.slide_layouts[1]  # Title and Content
+                slide = prs.slides.add_slide(slide_layout)
+                
+                title = slide.shapes.title
+                title.text = section.get('heading', 'Sección')
+                
+                # Contenido
+                content_shape = slide.placeholders[1]
+                text_frame = content_shape.text_frame
+                text_frame.clear()
+                
+                # Agregar contenido como párrafo
+                p = text_frame.paragraphs[0]
+                p.text = section.get('content', '')[:300] + "..."  # Limitar texto
+                p.font.size = Pt(14)
+                p.level = 0
+                
+                # Agregar bullet points
+                for point in section.get('bullet_points', [])[:5]:  # Max 5 bullets
+                    p = text_frame.add_paragraph()
+                    p.text = point
+                    p.font.size = Pt(12)
+                    p.level = 1
+            
+            # Slide: Conceptos clave
+            if structure.get('key_concepts'):
+                slide_layout = prs.slide_layouts[1]
+                slide = prs.slides.add_slide(slide_layout)
+                title = slide.shapes.title
+                title.text = "Conceptos Clave"
+                
+                content_shape = slide.placeholders[1]
+                text_frame = content_shape.text_frame
+                text_frame.clear()
+                
+                for concept in structure['key_concepts'][:6]:  # Max 6 conceptos
+                    p = text_frame.add_paragraph() if text_frame.paragraphs[0].text else text_frame.paragraphs[0]
+                    p.text = f"{concept.get('term', '')}: {concept.get('definition', '')}"
+                    p.font.size = Pt(12)
+                    p.level = 0
+            
+            # Slide final: Resumen
+            if structure.get('summary'):
+                slide_layout = prs.slide_layouts[1]
+                slide = prs.slides.add_slide(slide_layout)
+                title = slide.shapes.title
+                title.text = "Resumen"
+                
+                content_shape = slide.placeholders[1]
+                text_frame = content_shape.text_frame
+                text_frame.clear()
+                
+                p = text_frame.paragraphs[0]
+                p.text = structure['summary']
+                p.font.size = Pt(14)
+            
+            prs.save(file_buffer)
+        
+        file_buffer.seek(0)
+        file_data = file_buffer.read()
+        file_size = len(file_data)
+        
+        print(f"✅ Archivo generado: {file_size} bytes")
+        
+        # PASO 6: Subir a Supabase Storage
+        print(f"\n☁️  PASO 6: Subiendo archivo a Supabase Storage...")
+        
+        resource_id = str(uuid.uuid4())
+        file_extension = 'pdf' if resource_type == 'pdf' else 'pptx'
+        filename = f"{resource_id}.{file_extension}"
+        storage_path = f"{classroom_id}/{user_id}/{filename}"
+        
+        mime_type = 'application/pdf' if resource_type == 'pdf' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        
+        # Subir archivo (usar 'uploads' si 'generated-resources' no existe)
+        bucket_name = 'uploads'  # Cambiar a 'generated-resources' cuando el bucket exista
+        upload_result = await asyncio.to_thread(
+            lambda: supabase_client.client.storage.from_(bucket_name).upload(
+                path=storage_path,
+                file=file_data,
+                file_options={
+                    "content-type": mime_type,
+                    "upsert": "false"
+                }
+            )
+        )
+        
+        print(f"✅ Archivo subido: {storage_path}")
+        
+        # PASO 7: Guardar metadata en la base de datos
+        print(f"\n💾 PASO 7: Guardando metadata en la base de datos...")
+        
+        resource_data = {
+            "id": resource_id,
+            "classroom_id": classroom_id,
+            "user_id": user_id,
+            "resource_type": resource_type,
+            "title": structure.get('title', 'Recurso Educativo'),
+            "bucket": bucket_name,  # Usar el bucket que configuramos arriba
+            "storage_path": storage_path,
+            "file_size_bytes": file_size,
+            "mime_type": mime_type,
+            "generated_with_model": "gemini-2.0-flash",
+            "generation_prompt": topic or "Recurso general del classroom",
+            "source_document_ids": doc_ids,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        insert_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("generated_resources")
+            .insert(resource_data)
+            .execute()
+        )
+        
+        print(f"✅ Metadata guardada con ID: {resource_id}")
+        
+        # Obtener URL pública
+        public_url = supabase_client.client.storage.from_(bucket_name).get_public_url(storage_path)
         
         print(f"{'='*70}\n")
         
         return {
             "success": True,
-            "message": "Recursos generados exitosamente",
-            "resources": resources,
-            "classroom_id": classroom_id,
-            "chunks_analyzed": len(chunks)
+            "message": f"Recurso {resource_type.upper()} generado exitosamente",
+            "resource_id": resource_id,
+            "resource_type": resource_type,
+            "title": structure.get('title'),
+            "storage_path": storage_path,
+            "bucket": "generated-resources",
+            "file_size_bytes": file_size,
+            "public_url": public_url,
+            "sections_count": len(structure.get('sections', [])),
+            "concepts_count": len(structure.get('key_concepts', [])),
+            "source_documents": len(doc_ids)
         }
     
     except Exception as e:
@@ -1103,8 +1326,41 @@ Responde SOLO con JSON:"""
         
         return {
             "success": False,
-            "error": f"Error generando recursos: {error_details}"
+            "error": f"Error generando recurso: {error_details}"
         }
+
+
+@mcp.tool()
+async def generate_resources(
+    classroom_id: str,
+    resource_type: str,
+    user_id: str,
+    topic: str = None,
+    source_document_ids: list = None
+) -> Dict[str, Any]:
+    """
+    Genera recursos educativos (PDF o PowerPoint) basándose en documentos del classroom.
+    
+    El recurso se sube automáticamente a Supabase Storage y devuelve la URL pública
+    para descargar desde la aplicación React Native.
+    
+    Args:
+        classroom_id: UUID del classroom
+        resource_type: Tipo de recurso ('pdf' o 'ppt')
+        user_id: UUID del usuario que solicita el recurso
+        topic: (Opcional) Tema específico para el recurso
+        source_document_ids: (Opcional) Lista de IDs de documentos específicos a usar
+        
+    Returns:
+        Dict con información del recurso generado y URL de descarga
+    """
+    return await _generate_resources_impl(
+        classroom_id=classroom_id,
+        resource_type=resource_type,
+        user_id=user_id,
+        topic=topic,
+        source_document_ids=source_document_ids
+    )
 
 
 
@@ -1123,7 +1379,7 @@ def main():
         print("   ✅ analyze_and_update_user_context - Analizar conversación y actualizar contexto de usuario")
         print("   ✅ create_embedding - Crear embedding y almacenar en chunks")
         print("   ✅ professor_assistant - Asistente de profesor")
-        print("   ✅ generate_resources - Generar recursos de aprendizaje")
+        print("   ✅ generate_resources - Generar recursos educativos (PDF/PPT)")
         print("🎯 Servidor MCP listo para recibir peticiones...")
         
         # Ejecutar el servidor FastMCP
