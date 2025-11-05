@@ -720,11 +720,13 @@ async def _generate_resources_impl(
         # PASO 2: Obtener documentos del classroom
         print(f"\n📚 PASO 2: Obteniendo documentos del classroom...")
         
-        # Si se proporcionaron IDs específicos, usarlos
+        # Si se proporcionaron IDs específicos, usarlos (validando que pertenezcan al classroom)
         if source_document_ids:
+            print(f"   🔍 Filtrando por {len(source_document_ids)} documentos específicos")
             docs_result = await asyncio.to_thread(
                 lambda: supabase_client.client.table("classroom_documents")
                 .select("id, title, original_filename, storage_path")
+                .eq("classroom_id", classroom_id)  # IMPORTANTE: Validar que pertenezcan al classroom
                 .in_("id", source_document_ids)
                 .execute()
             )
@@ -739,6 +741,15 @@ async def _generate_resources_impl(
         
         documents = docs_result.data if docs_result.data else []
         print(f"✅ Encontrados {len(documents)} documentos")
+        
+        # Validar si se pidieron documentos específicos pero no se encontraron
+        if source_document_ids and len(documents) == 0:
+            return {
+                "success": False,
+                "error": "Los documentos especificados no existen o no pertenecen a este classroom"
+            }
+        elif source_document_ids and len(documents) < len(source_document_ids):
+            print(f"   ⚠️  Advertencia: Solo {len(documents)} de {len(source_document_ids)} documentos encontrados")
         
         if not documents:
             return {
