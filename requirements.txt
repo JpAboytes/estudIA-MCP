@@ -7,6 +7,9 @@ supabase>=2.3.4
 # AI/ML
 google-generativeai>=0.8.3
 
+# Image Processing
+Pillow>=10.0.0  # Para procesar imágenes y OCR
+
 # Document Generation
 reportlab>=4.0.0  # Para generar PDFs
 python-pptx>=0.6.21  # Para generar PowerPoints

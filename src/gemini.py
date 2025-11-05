@@ -124,6 +124,56 @@ class GeminiClient:
             print(f"Error generando texto: {error}")
             raise error
     
+    async def extract_text_from_image(self, image_data: bytes, mime_type: str = "image/jpeg") -> str:
+        """
+        Extrae texto de una imagen usando OCR de Gemini Vision
+        
+        Args:
+            image_data: Bytes de la imagen
+            mime_type: Tipo MIME de la imagen (image/jpeg, image/png, etc.)
+            
+        Returns:
+            Texto extraído de la imagen
+        """
+        try:
+            from PIL import Image
+            import io
+            
+            # Convertir bytes a imagen PIL
+            image = Image.open(io.BytesIO(image_data))
+            
+            # Crear prompt para extracción de texto
+            prompt = """Extrae TODO el texto visible en esta imagen.
+
+INSTRUCCIONES:
+- Transcribe exactamente lo que ves, palabra por palabra
+- Mantén la estructura original (párrafos, listas, títulos)
+- Si hay fórmulas matemáticas, escríbelas en formato LaTeX
+- Si hay tablas, mantén su estructura
+- Si hay diagramas, describe su contenido brevemente
+- NO agregues interpretaciones, solo transcribe el texto
+- Si no hay texto legible, responde "NO_TEXT_FOUND"
+
+Responde SOLO con el texto extraído, sin comentarios adicionales."""
+
+            # Usar el modelo para procesar la imagen
+            response = await asyncio.to_thread(
+                self.model.generate_content,
+                [prompt, image]
+            )
+            
+            extracted_text = response.text.strip()
+            
+            # Validar que se extrajo texto
+            if not extracted_text or extracted_text == "NO_TEXT_FOUND":
+                raise ValueError("No se pudo extraer texto de la imagen")
+            
+            return extracted_text
+            
+        except Exception as error:
+            print(f"Error extrayendo texto de imagen: {error}")
+            raise error
+    
     async def generate_embedding(self, text: str) -> List[float]:
         """
         Genera embedding para un texto usando Gemini

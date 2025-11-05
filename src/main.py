@@ -88,6 +88,87 @@ async def generate_embedding(text: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
+async def extract_text_from_image(
+    storage_path: str,
+    bucket_name: str = "uploads"
+) -> Dict[str, Any]:
+    """
+    Extrae texto de una imagen usando OCR de Gemini Vision.
+    
+    Soporta fotos de apuntes, documentos escaneados, capturas de pantalla, etc.
+    Útil para procesar contenido educativo que está en formato de imagen.
+    
+    Args:
+        storage_path: Ruta del archivo de imagen en Supabase Storage
+        bucket_name: Nombre del bucket donde está la imagen (default: "uploads")
+        
+    Returns:
+        Dict con el texto extraído y metadata
+    """
+    print(f"\n{'='*60}")
+    print("🎯 TOOL: extract_text_from_image")
+    print(f"{'='*60}")
+    print(f"📥 Parámetros:")
+    print(f"   - storage_path: {storage_path}")
+    print(f"   - bucket: {bucket_name}")
+    
+    try:
+        # Paso 1: Descargar la imagen desde Supabase Storage
+        print("   🔄 PASO 1: Descargando imagen desde Storage...")
+        
+        image_data = await asyncio.to_thread(
+            lambda: supabase_client.client.storage.from_(bucket_name).download(storage_path)
+        )
+        
+        if not image_data:
+            raise Exception("No se pudo descargar la imagen del Storage")
+        
+        print(f"   ✅ Imagen descargada ({len(image_data)} bytes)")
+        
+        # Paso 2: Detectar tipo MIME de la imagen
+        file_extension = storage_path.lower().split('.')[-1]
+        mime_types = {
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'gif': 'image/gif',
+            'webp': 'image/webp',
+            'bmp': 'image/bmp'
+        }
+        mime_type = mime_types.get(file_extension, 'image/jpeg')
+        print(f"   📸 Tipo de imagen: {mime_type}")
+        
+        # Paso 3: Extraer texto usando Gemini Vision OCR
+        print("   🔄 PASO 2: Extrayendo texto con Gemini Vision OCR...")
+        extracted_text = await gemini_client.extract_text_from_image(image_data, mime_type)
+        
+        print(f"   ✅ Texto extraído ({len(extracted_text)} caracteres)")
+        print(f"   📄 Preview: {extracted_text[:100]}...")
+        
+        print(f"✅ OCR completado exitosamente")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": True,
+            "extracted_text": extracted_text,
+            "text_length": len(extracted_text),
+            "storage_path": storage_path,
+            "bucket": bucket_name,
+            "mime_type": mime_type,
+            "preview": extracted_text[:200] + ("..." if len(extracted_text) > 200 else "")
+        }
+        
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR en OCR: {error_details}")
+        
+        return {
+            "success": False,
+            "error": f"Error extrayendo texto de imagen: {error_details}"
+        }
+
+
+@mcp.tool()
 async def store_document_chunk(
     classroom_document_id: str,
     chunk_index: int,
@@ -178,6 +259,176 @@ async def store_document_chunk(
         return {
             "success": False,
             "error": f"Error almacenando chunk: {error_details}"
+        }
+
+
+@mcp.tool()
+async def process_and_store_document(
+    classroom_document_id: str,
+    auto_chunk: bool = True,
+    chunk_size: int = 1000
+) -> Dict[str, Any]:
+    """
+    Procesa un documento (texto o imagen) y lo almacena en chunks automáticamente.
+    
+    Esta función es INTELIGENTE:
+    - Si el documento es una IMAGEN → Aplica OCR para extraer texto
+    - Si es TEXTO → Lo procesa directamente
+    - Divide automáticamente en chunks
+    - Genera embeddings para cada chunk
+    - Almacena todo en la base de datos
+    
+    Args:
+        classroom_document_id: UUID del documento en classroom_documents
+        auto_chunk: Si es True, divide automáticamente en chunks (default: True)
+        chunk_size: Tamaño de cada chunk en caracteres (default: 1000)
+        
+    Returns:
+        Dict con el resultado del procesamiento y chunks creados
+    """
+    print(f"\n{'='*60}")
+    print("🎯 TOOL: process_and_store_document")
+    print(f"{'='*60}")
+    print(f"📥 Parámetros:")
+    print(f"   - classroom_document_id: {classroom_document_id}")
+    print(f"   - auto_chunk: {auto_chunk}")
+    print(f"   - chunk_size: {chunk_size}")
+    
+    try:
+        # Paso 1: Obtener información del documento desde classroom_documents
+        print("   🔄 PASO 1: Obteniendo información del documento...")
+        
+        doc_result = await asyncio.to_thread(
+            lambda: supabase_client.client.table("classroom_documents")
+            .select("*")
+            .eq("id", classroom_document_id)
+            .single()
+            .execute()
+        )
+        
+        if not doc_result.data:
+            raise Exception(f"Documento {classroom_document_id} no encontrado")
+        
+        doc = doc_result.data
+        storage_path = doc.get('storage_path')
+        bucket = doc.get('bucket', 'uploads')
+        mime_type = doc.get('mime_type', '')
+        
+        print(f"   ✅ Documento encontrado: {doc.get('title', 'Sin título')}")
+        print(f"   📁 Ruta: {storage_path}")
+        print(f"   📦 Bucket: {bucket}")
+        print(f"   📄 Tipo: {mime_type}")
+        
+        # Paso 2: Determinar si es imagen o texto
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif']
+        image_mime_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
+        is_image = (any(storage_path.lower().endswith(ext) for ext in image_extensions) or 
+                    mime_type in image_mime_types)
+        
+        content = ""
+        
+        if is_image:
+            # Paso 2a: Procesar imagen con OCR
+            print(f"   🖼️  Detectada IMAGEN - Aplicando OCR...")
+            ocr_result = await extract_text_from_image(storage_path, bucket)
+            
+            if not ocr_result.get("success"):
+                raise Exception(f"Error en OCR: {ocr_result.get('error')}")
+            
+            content = ocr_result.get("extracted_text", "")
+            print(f"   ✅ Texto extraído por OCR ({len(content)} caracteres)")
+        else:
+            # Paso 2b: Descargar y leer archivo de texto
+            print(f"   📄 Detectado TEXTO - Descargando...")
+            file_data = await asyncio.to_thread(
+                lambda: supabase_client.client.storage.from_(bucket).download(storage_path)
+            )
+            
+            if not file_data:
+                raise Exception("No se pudo descargar el archivo")
+            
+            # Intentar decodificar como texto
+            try:
+                content = file_data.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    content = file_data.decode('latin-1')
+                except:
+                    raise Exception("No se pudo decodificar el archivo como texto")
+            
+            print(f"   ✅ Texto descargado ({len(content)} caracteres)")
+        
+        if not content or len(content.strip()) < 10:
+            raise Exception("El contenido extraído es demasiado corto o vacío")
+        
+        # Paso 3: Dividir en chunks si auto_chunk está activado
+        chunks = []
+        if auto_chunk:
+            print(f"   🔄 PASO 3: Dividiendo en chunks de {chunk_size} caracteres...")
+            
+            # Dividir en chunks con overlap de 100 caracteres para contexto
+            overlap = min(100, chunk_size // 10)
+            
+            for i in range(0, len(content), chunk_size - overlap):
+                chunk_text = content[i:i + chunk_size]
+                if chunk_text.strip():
+                    chunks.append({
+                        'index': len(chunks),
+                        'content': chunk_text,
+                        'start_pos': i,
+                        'end_pos': min(i + chunk_size, len(content))
+                    })
+            
+            print(f"   ✅ Creados {len(chunks)} chunks")
+        else:
+            # Un solo chunk con todo el contenido
+            chunks = [{'index': 0, 'content': content, 'start_pos': 0, 'end_pos': len(content)}]
+            print(f"   ℹ️  Sin chunking automático - 1 chunk completo")
+        
+        # Paso 4: Almacenar cada chunk
+        print(f"   🔄 PASO 4: Almacenando {len(chunks)} chunks...")
+        stored_chunks = []
+        
+        for chunk in chunks:
+            chunk_result = await store_document_chunk(
+                classroom_document_id=classroom_document_id,
+                chunk_index=chunk['index'],
+                content=chunk['content'],
+                token_count=len(chunk['content'].split())
+            )
+            
+            if chunk_result.get("success"):
+                stored_chunks.append(chunk_result)
+                print(f"   ✅ Chunk {chunk['index']} almacenado")
+            else:
+                print(f"   ⚠️  Error en chunk {chunk['index']}: {chunk_result.get('error')}")
+        
+        print(f"✅ Documento procesado exitosamente")
+        print(f"   📊 Total chunks: {len(stored_chunks)}/{len(chunks)}")
+        print(f"   📝 Total caracteres: {len(content)}")
+        print(f"   🖼️  Procesado con OCR: {'Sí' if is_image else 'No'}")
+        print(f"{'='*60}\n")
+        
+        return {
+            "success": True,
+            "message": "Documento procesado y almacenado exitosamente",
+            "document_id": classroom_document_id,
+            "is_image": is_image,
+            "ocr_applied": is_image,
+            "total_chunks": len(stored_chunks),
+            "total_characters": len(content),
+            "chunk_size_used": chunk_size,
+            "chunks": stored_chunks,
+            "content_preview": content[:300] + ("..." if len(content) > 300 else "")
+        }
+        
+    except Exception as e:
+        error_details = str(e)
+        print(f"\n❌ ERROR procesando documento: {error_details}")
+        
+        return {
+            "success": False,
+            "error": f"Error procesando documento: {error_details}"
         }
 
 
