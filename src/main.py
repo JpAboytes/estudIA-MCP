@@ -284,13 +284,15 @@ async def search_similar_chunks(
         }
 
 
-@mcp.tool()
-async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
+async def _chat_with_classroom_assistant_impl(request: ChatRequest) -> Dict[str, Any]:
     """
     Chat con el asistente de EstudIA especializado en los documentos del aula.
     
     Proporciona respuestas contextualizadas basándose en los documentos
     subidos al classroom específico. Similar a NotebookLM.
+    
+    INCLUYE PERSONALIZACIÓN basada en el contexto del usuario (nivel educativo,
+    estilo de aprendizaje, preferencias, etc.)
     
     Args:
         request: Objeto con message, classroom_id, user_id opcional y session_id opcional
@@ -306,38 +308,144 @@ async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
         print(f"   - Classroom ID: {request.classroom_id}")
         print(f"   - User ID: {request.user_id or 'Anonymous'}")
         
-        # Generar embedding para encontrar chunks relevantes
+        # PASO 0: Obtener contexto del usuario si está disponible
+        user_context_info = ""
+        if request.user_id:
+            try:
+                print(f"   👤 Obteniendo contexto del usuario...")
+                user_result = await asyncio.to_thread(
+                    lambda: supabase_client.client.table("users")
+                    .select("user_context, name")
+                    .eq("id", request.user_id)
+                    .single()
+                    .execute()
+                )
+                
+                if user_result.data:
+                    user_context = user_result.data.get('user_context', '')
+                    user_name = user_result.data.get('name', 'Estudiante')
+                    
+                    if user_context:
+                        user_context_info = f"""
+**CONTEXTO DEL ESTUDIANTE ({user_name}):**
+{user_context}
+
+IMPORTANTE: Adapta tu respuesta según este contexto:
+- Usa el nivel de complejidad apropiado para su nivel educativo
+- Considera su estilo de aprendizaje preferido
+- Ten en cuenta sus fortalezas y áreas de mejora
+- Respeta sus preferencias de comunicación
+- Personaliza ejemplos según sus intereses
+"""
+                        print(f"   ✅ Contexto del usuario obtenido ({len(user_context)} caracteres)")
+                    else:
+                        print(f"   ℹ️  Usuario sin contexto personalizado")
+            except Exception as e:
+                print(f"   ⚠️  No se pudo obtener contexto del usuario: {e}")
+        
+        # PASO 1: Generar embedding para encontrar chunks relevantes
         embedding = await gemini_client.generate_embedding(request.message)
         
-        # Buscar chunks relevantes en el classroom
-        search_result = await search_similar_chunks(
-            query_text=request.message,
-            classroom_id=request.classroom_id,
-            limit=5,
-            threshold=0.5
-        )
-        
-        relevant_chunks = search_result.get('results', []) if search_result.get('success') else []
+        # PASO 2: Buscar chunks relevantes en el classroom usando RPC directamente
+        try:
+            result = await asyncio.to_thread(
+                lambda: supabase_client.client.rpc(
+                    'match_classroom_chunks',
+                    {
+                        'query_embedding': embedding,
+                        'filter_classroom_id': request.classroom_id,
+                        'match_threshold': 0.5,
+                        'match_count': 5
+                    }
+                ).execute()
+            )
+            relevant_chunks = result.data if result.data else []
+        except Exception as e:
+            print(f"   ⚠️  Error buscando chunks: {e}")
+            relevant_chunks = []
         
         print(f"   📚 Chunks encontrados: {len(relevant_chunks)}")
         
-        # Construir contexto con los chunks
+        # PASO 3: Construir contexto con los chunks y extraer IDs de documentos únicos
         context_blocks = []
+        document_ids = set()  # Para almacenar IDs únicos de documentos
+        documents_info = {}   # Para almacenar información detallada de cada documento
+        
         for i, chunk in enumerate(relevant_chunks, start=1):
             content = chunk.get('content', '')
             doc_id = chunk.get('classroom_document_id', 'Unknown')
             chunk_idx = chunk.get('chunk_index', 0)
             similarity = chunk.get('similarity', 0)
             
+            # Agregar el ID del documento al set
+            if doc_id != 'Unknown':
+                document_ids.add(doc_id)
+                
+                # Guardar información del documento si no existe
+                if doc_id not in documents_info:
+                    documents_info[doc_id] = {
+                        'document_id': doc_id,
+                        'chunks_used': [],
+                        'max_similarity': similarity
+                    }
+                
+                # Agregar información del chunk usado
+                documents_info[doc_id]['chunks_used'].append({
+                    'chunk_index': chunk_idx,
+                    'similarity': similarity,
+                    'content_preview': content[:100] + '...' if len(content) > 100 else content
+                })
+                
+                # Actualizar similitud máxima si es mayor
+                if similarity > documents_info[doc_id]['max_similarity']:
+                    documents_info[doc_id]['max_similarity'] = similarity
+            
             block = f"[Chunk {i} - Doc: {doc_id}, Index: {chunk_idx}, Similitud: {similarity:.3f}]\n{content}"
             context_blocks.append(block)
         
         context = "\n\n---\n\n".join(context_blocks) if context_blocks else "No se encontraron documentos relevantes."
         
-        # Obtener respuesta del asistente con contexto
-        print(f"   🤖 Generando respuesta con Gemini...")
+        # PASO 3.5: Obtener información adicional de los documentos desde la tabla
+        documents_details = []
+        if document_ids:
+            try:
+                print(f"   📄 Obteniendo detalles de {len(document_ids)} documentos...")
+                docs_result = await asyncio.to_thread(
+                    lambda: supabase_client.client.table("classroom_documents")
+                    .select("id, title, description, original_filename, mime_type, storage_path, bucket")
+                    .in_("id", list(document_ids))
+                    .execute()
+                )
+                
+                if docs_result.data:
+                    for doc in docs_result.data:
+                        doc_id = doc['id']
+                        doc_info = documents_info.get(doc_id, {})
+                        
+                        documents_details.append({
+                            'document_id': doc_id,
+                            'title': doc.get('title', 'Sin título'),
+                            'description': doc.get('description'),
+                            'filename': doc.get('original_filename'),
+                            'mime_type': doc.get('mime_type'),
+                            'storage_path': doc.get('storage_path'),
+                            'bucket': doc.get('bucket', 'uploads'),
+                            'chunks_used': doc_info.get('chunks_used', []),
+                            'relevance_score': doc_info.get('max_similarity', 0)
+                        })
+                    
+                    # Ordenar por relevancia (mayor similitud primero)
+                    documents_details.sort(key=lambda x: x['relevance_score'], reverse=True)
+                    print(f"   ✅ Detalles de documentos obtenidos")
+            except Exception as e:
+                print(f"   ⚠️  Error obteniendo detalles de documentos: {e}")
+        
+        # PASO 4: Obtener respuesta del asistente con contexto personalizado
+        print(f"   🤖 Generando respuesta personalizada con Gemini...")
         
         prompt = f"""Eres un asistente educativo que ayuda a estudiantes respondiendo preguntas basándote en los documentos de su aula.
+
+{user_context_info}
 
 **Pregunta del estudiante:**
 {request.message}
@@ -349,6 +457,11 @@ async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
 - Responde basándote ÚNICAMENTE en la información de los documentos proporcionados
 - Si la información no está en los documentos, indícalo claramente
 - Sé claro, conciso y educativo
+- ADAPTA tu lenguaje y complejidad según el contexto del estudiante
+- Si el estudiante prefiere aprendizaje visual, menciona diagramas o imágenes cuando sea relevante
+- Si prefiere código/práctica, enfócate en ejemplos prácticos
+- Ajusta la profundidad de tu explicación según su nivel educativo
+- Usa un tono y vocabulario apropiado para su contexto
 - Cita específicamente qué chunk/documento usaste si es relevante
 - Si no hay documentos relevantes, sugiere reformular la pregunta o subir documentos sobre el tema
 """
@@ -356,7 +469,11 @@ async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
         # Generar respuesta con Gemini
         response = await gemini_client.generate_text(prompt)
         
-        print(f"   ✅ Respuesta generada")
+        print(f"   ✅ Respuesta personalizada generada")
+        print(f"   📚 Documentos únicos referenciados: {len(document_ids)}")
+        if documents_details:
+            for doc in documents_details[:3]:
+                print(f"      - {doc['title']} (relevancia: {doc['relevance_score']:.3f})")
         print(f"{'='*60}\n")
         
         return {
@@ -364,8 +481,13 @@ async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
             'data': {
                 'response': response,
                 'chunks_referenced': len(relevant_chunks),
-                'chunks': relevant_chunks[:3],  # Solo las 3 más relevantes
-                'classroom_id': request.classroom_id
+                'chunks': relevant_chunks[:3],  # Solo las 3 más relevantes (backward compatibility)
+                'classroom_id': request.classroom_id,
+                'personalized': bool(user_context_info),  # Indica si se personalizó
+                # NUEVO: Información estructurada de documentos para preview
+                'documents': documents_details,  # Lista completa con detalles de cada documento
+                'document_ids': list(document_ids),  # Solo los IDs únicos
+                'total_documents': len(document_ids)
             },
             'message': "Respuesta del asistente generada"
         }
@@ -377,6 +499,26 @@ async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
             'error': str(error),
             'message': "Error en el chat con el asistente"
         }
+
+
+@mcp.tool()
+async def chat_with_classroom_assistant(request: ChatRequest) -> Dict[str, Any]:
+    """
+    Chat con el asistente de EstudIA especializado en los documentos del aula.
+    
+    Proporciona respuestas contextualizadas basándose en los documentos
+    subidos al classroom específico. Similar a NotebookLM.
+    
+    INCLUYE PERSONALIZACIÓN basada en el contexto del usuario (nivel educativo,
+    estilo de aprendizaje, preferencias, etc.)
+    
+    Args:
+        request: Objeto con message, classroom_id, user_id opcional y session_id opcional
+    
+    Returns:
+        Dict con la respuesta del asistente y los chunks referenciados
+    """
+    return await _chat_with_classroom_assistant_impl(request)
 
 
 @mcp.tool()
