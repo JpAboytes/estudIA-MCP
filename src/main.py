@@ -6,11 +6,13 @@ Sistema similar a NotebookLM para gestión de documentos educativos por aula
 
 import asyncio
 import json
+import io
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
+from PyPDF2 import PdfReader
 
 # Importar nuestros módulos
 from .config import config
@@ -305,11 +307,16 @@ async def _store_document_chunks_impl(
         print(f"   📦 Bucket: {bucket}")
         print(f"   📄 Tipo: {mime_type}")
         
-        # Paso 2: Determinar si es imagen o texto
+        # Paso 2: Determinar el tipo de documento y extraer contenido
         image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif']
         image_mime_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
+        pdf_extensions = ['.pdf']
+        pdf_mime_types = ['application/pdf']
+        
         is_image = (any(storage_path.lower().endswith(ext) for ext in image_extensions) or 
                     mime_type in image_mime_types)
+        is_pdf = (any(storage_path.lower().endswith(ext) for ext in pdf_extensions) or 
+                  mime_type in pdf_mime_types)
         
         content = ""
         
@@ -323,9 +330,48 @@ async def _store_document_chunks_impl(
             
             content = ocr_result.get("extracted_text", "")
             print(f"   ✅ Texto extraído por OCR ({len(content)} caracteres)")
+            
+        elif is_pdf:
+            # Paso 2b: Procesar PDF con PyPDF2
+            print(f"   📄 Detectado PDF - Extrayendo texto...")
+            file_data = await asyncio.to_thread(
+                lambda: supabase_client.client.storage.from_(bucket).download(storage_path)
+            )
+            
+            if not file_data:
+                raise Exception("No se pudo descargar el archivo PDF")
+            
+            try:
+                # Crear un objeto BytesIO para PyPDF2
+                pdf_file = io.BytesIO(file_data)
+                pdf_reader = PdfReader(pdf_file)
+                
+                # Extraer texto de todas las páginas
+                text_parts = []
+                for page_num, page in enumerate(pdf_reader.pages, 1):
+                    page_text = page.extract_text()
+                    if page_text.strip():
+                        text_parts.append(page_text)
+                
+                content = "\n\n".join(text_parts)
+                print(f"   ✅ Texto extraído del PDF ({len(pdf_reader.pages)} páginas, {len(content)} caracteres)")
+                
+                if not content.strip():
+                    print(f"   ⚠️  El PDF no tiene texto extraíble, podría ser escaneado")
+                    print(f"   🖼️  Intentando OCR con Gemini...")
+                    # Si el PDF no tiene texto, intentar OCR
+                    ocr_result = await _extract_text_from_image_impl(storage_path, bucket)
+                    if ocr_result.get("success"):
+                        content = ocr_result.get("extracted_text", "")
+                        print(f"   ✅ Texto extraído por OCR ({len(content)} caracteres)")
+                    
+            except Exception as pdf_error:
+                print(f"   ❌ Error al procesar PDF: {pdf_error}")
+                raise Exception(f"Error al extraer texto del PDF: {pdf_error}")
+            
         else:
-            # Paso 2b: Descargar y leer archivo de texto
-            print(f"   📄 Detectado TEXTO - Descargando...")
+            # Paso 2c: Descargar y leer archivo de texto plano
+            print(f"   📄 Detectado TEXTO PLANO - Descargando...")
             file_data = await asyncio.to_thread(
                 lambda: supabase_client.client.storage.from_(bucket).download(storage_path)
             )
@@ -346,6 +392,19 @@ async def _store_document_chunks_impl(
         
         if not content or len(content.strip()) < 10:
             raise Exception("El contenido extraído es demasiado corto o vacío")
+        
+        # Paso 2d: Limpiar formato del texto (eliminar saltos de línea excesivos)
+        print(f"   🧹 Limpiando formato del texto...")
+        original_length = len(content)
+        
+        # Normalizar espacios en blanco: múltiples espacios/saltos → un espacio
+        import re
+        content = re.sub(r'\s+', ' ', content)
+        content = content.strip()
+        
+        cleaned_length = len(content)
+        reduction = 100 - (cleaned_length / original_length * 100) if original_length > 0 else 0
+        print(f"   ✅ Formato limpio ({cleaned_length} caracteres, -{reduction:.1f}%)")
         
         # Paso 3: Dividir en chunks con overlap
         print(f"   🔄 PASO 3: Dividiendo en chunks (size={chunk_size}, overlap={chunk_overlap})...")

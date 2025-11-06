@@ -10,6 +10,9 @@ google-generativeai>=0.8.3
 # Image Processing
 Pillow>=10.0.0  # Para procesar imágenes y OCR
 
+# PDF Processing
+PyPDF2>=3.0.0  # Para extraer texto de PDFs
+
 # Document Generation
 reportlab>=4.0.0  # Para generar PDFs
 python-pptx>=0.6.21  # Para generar PowerPoints
