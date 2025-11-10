@@ -1,213 +1,285 @@
-# FiscAI MCP — FiscMCP
+<div align="center">
 
-README profesional (en español) para el proyecto FiscMCP. Este documento explica qué hace el proyecto, cómo instalarlo y ejecutarlo, cómo configurarlo y pasos de desarrollo y despliegue.
+# 📚 EstudIA MCP Server
 
-## Descripción
+Servidor MCP (Model Context Protocol) y API educativa para gestión inteligente de documentos por aula (classroom), búsqueda semántica, OCR, personalización automática del perfil del estudiante y asistente conversacional con RAG.
 
-FiscAI MCP (FiscMCP) es un servidor de herramientas (MCP) orientado a ofrecer asesoría fiscal y financiera para micro y pequeñas empresas en México. Combina:
+**Estado:** Activo · **Versión:** 2.0.0 · **Stack principal:** Python · FastMCP · Supabase · Google Gemini
 
-- Un motor de inteligencia artificial (Google Gemini) para generación de lenguaje y embeddings.
-- Un backend de búsqueda semántica y almacenamiento (Supabase) para RAG (Retrieval-Augmented Generation).
-- Herramientas para: recomendaciones fiscales, chat asistido, análisis de riesgo, búsqueda de documentos, roadmap de formalización, predicción de crecimiento (modelo ML) y apertura de mapas (deep links).
+</div>
 
-El núcleo está implementado con `fastmcp` (instancia `mcp` en `src/main.py`) y ofrece además un servidor HTTP opcional (`src/http_server.py`) para probar endpoints REST.
+---
 
-## Características principales
+## 🧠 Visión General
 
-- Recomendaciones fiscales personalizadas gracias a RAG (embeddings + documentos relevantes).
-- Chat asistido con detección automática de intención (por ejemplo, abrir mapa para bancos o SAT).
-- Búsqueda semántica de documentos fiscales en Supabase.
-- Análisis de riesgo fiscal y generación de roadmap de formalización.
-- Predicción de crecimiento del negocio con un modelo entrenado (en `src/modelDemo`).
-- **NUEVO:** Herramientas de embeddings y almacenamiento (`generate_embedding`, `store_document_chunks`, `search_similar_chunks`) - Ver [STORE_DOCUMENT_CHUNKS_UPDATE.md](./STORE_DOCUMENT_CHUNKS_UPDATE.md)
-  - `store_document_chunks` ahora procesa documentos automáticamente: solo necesitas el ID del documento y la función se encarga de dividirlo en chunks, generar embeddings y almacenarlos
-- **NUEVO:** Análisis inteligente de conversaciones para actualizar contexto de usuario automáticamente (`analyze_and_update_user_context`) - Ver [CONTEXT_UPDATE_TOOL.md](./CONTEXT_UPDATE_TOOL.md)
-- **NUEVO:** Generación de recursos educativos en PDF y PowerPoint (`generate_resources`) basados en documentos del classroom - Ver [GENERATE_RESOURCES_DOCS.md](./GENERATE_RESOURCES_DOCS.md) y [SETUP_GENERATE_RESOURCES.md](./SETUP_GENERATE_RESOURCES.md)
+EstudIA MCP convierte un conjunto de documentos educativos (PDF, imágenes, texto plano) en una base de conocimiento consultable mediante:
 
-## Estructura del repositorio (resumen)
+1. Ingesta automática y chunking con embeddings.
+2. OCR para imágenes (apuntes, pizarrón, capturas) usando Gemini Vision.
+3. Búsqueda semántica enfocada por aula (classroom) vía funciones RPC en Supabase.
+4. Chat contextual estilo NotebookLM que cita internamente los fragmentos relevantes sin exponer datos técnicos.
+5. Personalización dinámica del estudiante mediante análisis de conversaciones (actualización incremental del `user_context`).
+6. Herramientas MCP accesibles para agentes o integraciones externas + API HTTP opcional para pruebas rápidas.
 
-- `run_server.py` — Entrypoint para ejecutar el servidor MCP (modo FastMCP).
-- `run_http_server.py` — Script para ejecutar el servidor HTTP (FastAPI + Uvicorn).
-- `server.py` — Archivo preparado para deployment (exporta `mcp` para detectores automáticos).
-- `requirements.txt` — Dependencias del proyecto.
-- `src/` — Código fuente principal:
-  - `main.py` — Registro de herramientas MCP (`@mcp.tool()` y prompts `@mcp.prompt()`).
-  - `http_server.py` — API REST para probar herramientas.
-  - `gemini.py` — Cliente e integración con Google Gemini (LLM & embeddings).
-  - `supabase_client.py` — Cliente para Supabase (búsqueda semántica, historial de chat, etc.).
-  - `places.py` — Integración con Google Places para búsqueda de ubicaciones.
-  - `config.py` — Carga de variables de entorno y validaciones.
-  - `modelDemo/` — Datos y scripts de ejemplo para el modelo ML (entrenamiento y demo).
-- `test_*.py` — Suites de tests unitarios y de integración (varios archivos `test_*.py`).
+---
 
-## Requisitos
+## ✨ Características Clave
 
-- Python 3.10+ (preferible).
-- Pip.
-- Acceso a las APIs externas usadas:
-  - Google Gemini (clave `GEMINI_API_KEY`)
-  - Supabase (URL y service role key)
-  - Google Places API (para búsqueda de lugares)
+- 🔍 Búsqueda semántica de chunks por aula (`search_similar_chunks`).
+- 🧩 Procesamiento y almacenamiento automatizado de documentos (`store_document_chunks`).
+- 🖼️ OCR inteligente para imágenes con Gemini Vision (ver `OCR_FUNCTIONALITY.md`).
+- 💬 Asistente contextual personalizado por aula (`chat_with_classroom_assistant`).
+- 👤 Actualización automática del perfil del estudiante (`analyze_and_update_user_context`).
+- 🧠 Generación de embeddings consistente vía Gemini (`generate_embedding`).
+- 📦 Arquitectura MCP: cada herramienta lista para ser invocada por clientes compatibles.
+- 🧪 Suite de tests (`test_*.py`) para validar ingestión, contexto y herramientas.
 
-Dependencias listadas en `requirements.txt`. Adicionalmente para el servidor HTTP se recomienda instalar `fastapi` y `uvicorn[standard]`.
+---
 
-## Variables de entorno (principales)
+## 🏗️ Arquitectura (Alto Nivel)
 
-Configurar en un archivo `.env` en la raíz del proyecto o en el entorno del sistema:
-
-- SUPABASE_URL — URL del proyecto Supabase.
-- SUPABASE_SERVICE_ROLE_KEY — Service role key para Supabase (se usa para RPCs/privilegios).
-- GEMINI_API_KEY — API key para Google Gemini.
-- EXPO_PUBLIC_GOOGLE_MAPS_API_KEY o GOOGLE_MAPS_API_KEY — para `places`.
-- PORT — Puerto para el servidor HTTP (por defecto `8000`).
-- NODE_ENV — `development` o `production`.
-- Opcionales:
-  - GEMINI_MODEL — Nombre del modelo Gemini (por defecto `gemini-2.0-flash`).
-  - GEMINI_EMBED_MODEL — Modelo de embeddings (por defecto `gemini-embedding-001`).
-  - EMBED_DIM — Dimensionalidad del embedding (por defecto `768`).
-  - SIMILARITY_THRESHOLD — Umbral de similitud (por defecto `0.6`).
-  - TOPK_DOCUMENTS — Número de documentos a recuperar (por defecto `6`).
-
-Importante: No publiques claves secretas en repositorios públicos. Usa secretos en tu plataforma de despliegue.
-
-## Instalación (local)
-
-1. Clona el repositorio y navega a la carpeta:
-
-```powershell
-cd C:\Users\Owner\Downloads\FiscMCP
+```mermaid
+flowchart LR
+    A[Upload Documento
+    (Supabase Storage)] --> B[Registro
+    classroom_documents]
+    B --> C[store_document_chunks()
+    - OCR si imagen
+    - PyPDF2 si PDF
+    - Limpieza texto
+    - Chunk + Embeddings]
+    C --> D[(classroom_document_chunks)]
+    D --> E[search_similar_chunks() RPC]
+    E --> F[chat_with_classroom_assistant]
+    F --> G[Gemini LLM]
+    H[cubicle_messages] --> I[analyze_and_update_user_context]
+    I --> J[(users.user_context)]
+    G --> F
 ```
 
-2. (Opcional) Crea y activa un entorno virtual:
+**Componentes principales:**
+
+- `Gemini`: Generación de texto, embeddings y OCR.
+- `Supabase`: Persistencia (usuarios, documentos, chunks, mensajes) y RPCs de búsqueda vectorial.
+- `FastMCP`: Registro y exposición de herramientas y prompts.
+- `FastAPI` (opcional): Capa HTTP para pruebas manuales.
+
+---
+
+## 📁 Estructura del Repositorio
+
+| Ruta | Descripción |
+|------|-------------|
+| `src/main.py` | Registro de herramientas MCP y lógica principal. |
+| `src/gemini.py` | Cliente Gemini (texto, embeddings, OCR, análisis). |
+| `src/supabase_client.py` | Funciones de acceso y búsquedas contra Supabase. |
+| `src/http_server.py` | API REST opcional (FastAPI). |
+| `src/config.py` | Carga y validación de variables de entorno. |
+| `src/modelDemo/` | Scripts y dataset de ejemplo ML (legado). |
+| `server.py` | Entry de deployment (exporta `mcp`). |
+| `run_server.py` | Arranque rápido del servidor MCP. |
+| `run_http_server.py` | Arranque rápido de la API HTTP. |
+| `CONTEXT_UPDATE_TOOL.md` | Documentación de la herramienta de contexto. |
+| `OCR_FUNCTIONALITY.md` | Documentación de OCR. |
+| `STORE_DOCUMENT_CHUNKS_UPDATE.md` | Evolución del flujo de chunking. |
+
+---
+
+## 🔐 Variables de Entorno
+
+Crear `.env` en la raíz (sin comillas):
+
+```env
+SUPABASE_URL=https://TU_PROYECTO.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=super-secreto
+GEMINI_API_KEY=ya_lo_sabes
+PORT=8000
+NODE_ENV=development
+GEMINI_MODEL=gemini-2.0-flash
+GEMINI_EMBED_MODEL=gemini-embedding-001
+EMBED_DIM=768
+SIMILARITY_THRESHOLD=0.6
+TOPK_DOCUMENTS=6
+```
+
+> Nunca publiques `SUPABASE_SERVICE_ROLE_KEY` ni `GEMINI_API_KEY`. Usa gestores de secretos en producción.
+
+---
+
+## 🧩 Instalación (Local)
 
 ```powershell
+git clone <repo-url>
+cd estudIA-MCP
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
-3. Instala las dependencias:
+Para la API HTTP (si no estuviera ya incluida en `requirements.txt`):
 
 ```powershell
-pip install -r requirements.txt
-# Recomendado para la API HTTP (si vas a usarla):
 pip install fastapi uvicorn[standard]
 ```
 
-4. Crea un archivo `.env` siguiendo la sección "Variables de entorno" y añade las claves necesarias.
+Crear archivo `.env` con las claves requeridas.
 
-## Ejecución
+---
 
-Hay dos modos principales para ejecutar el proyecto:
+## 🚀 Ejecución
 
-1) Servidor MCP (modo FastMCP)
-
-- Uso (desde la raíz del repo):
+### Modo MCP (herramientas para agentes)
 
 ```powershell
 python run_server.py
 ```
 
-Este script añade `src` al `PYTHONPATH` y ejecuta `main()` en `src/main.py`, que registra las herramientas y ejecuta `mcp.run()`.
+El objeto `mcp` expuesto en `server.py` permite también ejecutar:
 
-2) Servidor HTTP (FastAPI) — para probar endpoints REST
+```powershell
+fastmcp run server.py
+```
 
-- Uso (desde la raíz del repo):
+### Modo HTTP (pruebas REST)
 
 ```powershell
 python run_http_server.py
 ```
 
-- El script usa `uvicorn` internamente y expondrá:
-  - Health: http://localhost:8000/health
-  - Documentación interactiva (Swagger/OpenAPI): http://localhost:8000/docs
-  - Endpoints principales: `/api/fiscal-advice`, `/api/chat`, `/api/risk-analysis`, `/api/search`, `/api/user-context`.
+Endpoints clave:
 
-Si cambias el puerto, define `PORT` en `.env`.
+| Endpoint | Uso |
+|----------|-----|
+| `/health` | Estado y conectividad. |
+| `/api/chat` | Chat con asistente contextual. |
+| `/api/search` | Búsqueda semántica de documentos. |
+| `/api/user-context` | Recuperar contexto del estudiante. |
 
-## Endpoints (ejemplos)
+---
 
-1) Health check
+## 🛠️ Herramientas MCP Destacadas
 
-```powershell
-# Obtener estado
-Invoke-RestMethod -Method Get -Uri http://localhost:8000/health
-```
+| Tool | Propósito |
+|------|-----------|
+| `generate_embedding(text)` | Obtiene embedding de un texto. |
+| `store_document_chunks(classroom_document_id, chunk_size, chunk_overlap)` | Ingesta completa automática. |
+| `search_similar_chunks(query_text, classroom_id)` | Recupera fragmentos relevantes. |
+| `chat_with_classroom_assistant(request)` | Chat RAG personalizado (usa documentos + perfil). |
+| `analyze_and_update_user_context(user_id, session_id)` | Actualiza perfil educativo. |
 
-2) Solicitar recomendación fiscal (ejemplo)
+> Revisa `src/main.py` para parámetros y respuesta detallada de cada herramienta.
 
-```powershell
-$body = @{ actividad = 'Ventas en línea'; ingresos_anuales = 300000; estado = 'CDMX' } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/fiscal-advice -Body $body -ContentType 'application/json'
-```
+---
 
-3) Chat con el asistente
+## 🔎 Flujo de Ingesta y Búsqueda
 
-```powershell
-$body = @{ message = '¿Dónde está un Banorte cerca de Reforma?'; user_id = 'guest' } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/chat -Body $body -ContentType 'application/json'
-```
+1. Subes archivo a Supabase Storage y creas registro en `classroom_documents`.
+2. Llamas `store_document_chunks(classroom_document_id)`.
+3. Se detecta tipo (imagen/PDF/texto) → OCR o extracción.
+4. Limpieza, división en chunks y generación de embeddings.
+5. Inserción en `classroom_document_chunks`.
+6. Consulta con `search_similar_chunks` durante el chat.
 
-4) Búsqueda semántica de documentos
+---
 
-```powershell
-$body = @{ query = 'beneficios régimen RESICO'; limit = 5 } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/search -Body $body -ContentType 'application/json'
-```
+## 🖼️ OCR (Gemini Vision)
 
-## Cómo funciona (alto nivel)
+- Soporta: JPG, JPEG, PNG, GIF, WEBP, BMP, HEIC/HEIF.
+- Extrae texto estructurado (intenta mantener párrafos / tablas simples).
+- Si PDF no tiene texto embebido, intenta fallback OCR.
 
-- `src/main.py` registra múltiples herramientas como `@mcp.tool()` y prompts con `@mcp.prompt()` que implementan la lógica de negocio (RAG, chat, análisis de riesgo, roadmap, etc.).
-- `src/gemini.py` encapsula la integración con Google Gemini: generación de embeddings, prompts, y lógica para el chat y RAG.
-- `src/supabase_client.py` encapsula acceso a Supabase — incluye RPCs para búsqueda semántica (`match_fiscai_documents`) y tablas para historial de chat y usuarios.
-- `src/places.py` usa Google Places APIs para búsquedas de establecimientos y genera `deepLink` para la app móvil (fiscai://...).
-- `src/config.py` centraliza la configuración y valida variables de entorno críticas.
+Ver detalles y buenas prácticas en `OCR_FUNCTIONALITY.md`.
 
-## Desarrollo y pruebas
+---
 
-- El repo contiene tests `test_*.py` para pruebas unitarias básicas. Puedes ejecutar los tests con `pytest`.
+## 🧠 Personalización de Estudiantes
+
+La herramienta `analyze_and_update_user_context` analiza toda la conversación (tabla `cubicle_messages`) y decide si incorpora nueva información relevante (nivel educativo, estilo de aprendizaje, intereses, objetivos, fortalezas, etc.).
+
+Formato de respuesta y criterios: ver `CONTEXT_UPDATE_TOOL.md`.
+
+---
+
+## 🗄️ Esquema de Datos (Resumen)
+
+| Tabla | Campos Clave | Función |
+|-------|--------------|---------|
+| `users` | `id`, `name`, `email`, `user_context` | Perfil + contexto enriquecido. |
+| `classroom_documents` | `id`, `classroom_id`, `title`, `storage_path`, `mime_type` | Metadatos de documentos. |
+| `classroom_document_chunks` | `id`, `classroom_document_id`, `chunk_index`, `content`, `embedding` | Fragmentos indexables. |
+| `cubicle_messages` | `id`, `session_id`, `user_id`, `content`, `created_at` | Conversación para análisis. |
+
+---
+
+## 🧪 Pruebas
+
+Instalar pytest si no está:
 
 ```powershell
 pip install pytest
 pytest -q
 ```
 
-- Para desarrollo iterativo recomendamos usar un entorno virtual y reiniciar el servidor cuando cambies código.
+Tests relevantes:
 
-## Depuración y problemas comunes
+- `test_store_document_chunks.py` — Ingesta y chunking.
+- `test_search_pdf.py` / `test_pdf_chunks_simple.py` — Búsquedas y fragmentación.
+- `test_user_context_update.py` — Actualización de contexto.
+- `test_ocr_functionality.py` — Flujo OCR.
 
-- Error: "Faltan variables de entorno..." — Asegúrate de crear `.env` con `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY` y `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` si usas `places`.
-- Error de Gemini: Verifica que `GEMINI_API_KEY` sea válida y que el modelo configurado exista en tu cuenta.
-- Supabase: Si las funciones RPC fallan, verifica que los nombres (`match_fiscai_documents`, `match_documents`) existan en tu proyecto Supabase.
-
-## Seguridad
-
-- Nunca subas `SUPABASE_SERVICE_ROLE_KEY` ni `GEMINI_API_KEY` a repositorios públicos.
-- Para producción, utiliza secretos gestionados por la plataforma de hosting (Vercel, Railway, Fly, AWS, etc.) en lugar de `.env` en disco.
-
-## Despliegue (sugerencias rápidas)
-
-- Plataformas recomendadas: Railway, Fly.io, Azure App Service, DigitalOcean App Platform.
-- Recomendación: desplegar el servidor HTTP (`run_http_server.py`) detrás de un proxy y gestionar secretos con el proveedor.
-- Considerar usar contenedor Docker para portabilidad (Dockerfile no incluido — puede añadirse fácilmente).
-
-## Contribuir
-
-- Abre issues para sugerencias o bugs.
-- Fork + PR: agrega tests para cambios funcionales.
-- Sigue el estilo de codificación existente y documenta cambios en `README.md` cuando alteres el comportamiento público.
-
-## Siguientes pasos recomendados
-
-- Añadir un `Dockerfile` y `docker-compose` para facilitar despliegue local.
-- Añadir CI (GitHub Actions) que valide linting y tests.
-- Añadir un ejemplo de `.env.example` con variables no sensibles (nombres de variables y descripciones).
-- Mejorar la cobertura de tests para `src/gemini.py` (simular responses) y `src/supabase_client.py` (mock de RPCs).
+> Puedes exportar `TESTING=1` para omitir validaciones estrictas en `config.py` durante pruebas controladas.
 
 ---
 
-Resumen: he analizado la estructura y el código principal del proyecto (`src/main.py`, `src/http_server.py`, `src/gemini.py`, `src/supabase_client.py`, `src/places.py`, `src/config.py`) y he preparado este README en español con guías de instalación, configuración y uso. Si quieres, puedo:
+## 🧯 Troubleshooting Rápido
 
-- Añadir un archivo `.env.example` al repo con las variables de entorno listadas.
-- Crear un `Dockerfile` y `docker-compose.yml` de ejemplo.
-- Añadir un script de comprobación (makefile / ps1) para desarrollo local.
+| Problema | Causa Común | Solución |
+|----------|-------------|----------|
+| Variables faltantes | `.env` incompleto | Revisar sección Variables de Entorno. |
+| RPC no existe | Función en Supabase no creada | Crear `match_classroom_chunks` / `match_documents`. |
+| OCR vacío | Imagen ilegible | Mejorar iluminación / resolución. |
+| Embedding error | Modelo/clave inválida | Verificar `GEMINI_API_KEY` y nombres de modelo. |
+| Búsqueda sin resultados | Umbral muy alto | Ajustar `SIMILARITY_THRESHOLD` (0.5–0.6). |
 
-Dime qué prefieres y lo implemento a continuación.
+---
+
+## 📈 Roadmap Sugerido
+
+- [ ] Normalizar nombres (remover referencias fiscales legadas).
+- [ ] `.env.example` en el repositorio.
+- [ ] Dockerfile + docker-compose para desarrollo rápido.
+- [ ] CI (GitHub Actions) con lint + tests.
+- [ ] Cache de embeddings para evitar recomputaciones.
+- [ ] Batch ingest para múltiples documentos.
+- [ ] Mejor soporte PDF escaneado multipágina.
+- [ ] Métricas de uso (prometheus / logs estructurados).
+
+---
+
+## 🤝 Contribuir
+
+1. Fork & branch descriptiva (`feat/ocr-batch`).
+2. Añade tests para nueva lógica pública.
+3. Ejecuta suite (`pytest -q`).
+4. Haz PR incluyendo descripción clara y motivación.
+
+Estilo: seguir convenciones existentes, mantener español técnico claro. Documenta cambios significativos en este README.
+
+---
+
+## 🛡️ Licencia
+
+Si aún no hay licencia definida, se recomienda añadir una (MIT/Apache 2.0). Hasta entonces, el código se considera con derechos reservados del autor original.
+
+---
+
+## 📌 Resumen Rápido (TL;DR)
+
+Sube documento → `store_document_chunks` → chunks + embeddings → `search_similar_chunks` → chat contextual y personalizable → contexto de estudiante se enriquece con `analyze_and_update_user_context`.
+
+---
+
+¿Necesitas añadir Docker / `.env.example` / scripts de utilidades? Pídelo y lo agrego enseguida.
+
+---
+
+<sub>README generado automáticamente analizando código y docs existentes (2025-11-09).</sub>
